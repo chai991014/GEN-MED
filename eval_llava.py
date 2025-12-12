@@ -16,13 +16,13 @@ MODEL_CHOICE = "QWEN"
 
 # Paths
 DATASET_ID = "flaviagiammarino/vqa-rad"
-OUTPUT_FILE = f"results_{MODEL_CHOICE.lower()}.csv"
+OUTPUT_FILE = f"./result/results_{MODEL_CHOICE.lower()}.csv"
 
 # Path to the cloned folder (Relative to this script)
 LLAVA_REPO_PATH = os.path.abspath("./LLaVA-Med")
 # Path to the model weights (Hugging Face ID or local path)
 LLAVA_MODEL_PATH = "microsoft/llava-med-v1.5-mistral-7b"
-QWEN_MODEL_ID = "Qwen/Qwen2-VL-7B-Instruct"
+QWEN_MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 
 
 # ==========================================
@@ -112,7 +112,6 @@ class QwenHandler(VQAModel):
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16
         )
 
         self.model = Qwen2VLForConditionalGeneration.from_pretrained(
