@@ -90,7 +90,6 @@ else:
 
 OUTPUT_FILE = f"{output_dir}/results_{base_name}.csv"
 LOG_FILE = f"{output_dir}/log_{base_name}.txt"
-SUMMARY_FILE = f"{output_dir}/summary_{base_name}.txt"
 
 sys.stdout = Logger(LOG_FILE)
 print("\n" + "="*40)
@@ -261,15 +260,3 @@ print("=" * 40)
 # Save Files
 df.to_csv(OUTPUT_FILE, index=False)
 print(f"📄 Predictions saved: {OUTPUT_FILE}")
-
-with open(SUMMARY_FILE, "w") as f:
-    f.write(f"Model: {CONFIG['MODEL_CHOICE']}\n")
-    f.write(f"Pipeline: {tech_tag}\n")
-    f.write("=" * 30 + "\n")
-    f.write(f"Closed Accuracy: {closed_acc:.2f}%\n")
-    f.write(f"Open BERTScore:  {bert_score:.2f}\n")
-    f.write(f"Open ROUGE-L:    {rouge_score:.2f}\n")
-    f.write(f"Open BLEU-1:     {bleu_score:.2f}\n")
-    f.write("-" * 30 + "\n")
-    f.write(f"Total Time:      {total_time:.2f} sec\n")
-print(f"📊 Summary saved: {SUMMARY_FILE}")
