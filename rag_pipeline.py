@@ -1,5 +1,10 @@
 import torch
 from reranker import Reranker
+from prompt_template import (
+    get_reflexion_critique_prompt,
+    get_reflexion_critique_context,
+    get_reflexion_refine_prompt
+)
 
 
 class RAGPipeline:
@@ -7,6 +12,7 @@ class RAGPipeline:
     Orchestrates the Retrieval-Augmented Generation pipeline.
     Combines a Retrieval Engine with a VQA Model Adapter.
     """
+
     def __init__(self,
                  llm_adapter,
                  retrieval_engine,
@@ -82,22 +88,16 @@ class RAGPipeline:
         draft_answer = self.llm.generate(image, question, context=rag_context)
 
         # Critique (Self-Correction)
-        critique_prompt = (
-            f"You previously answered: '{draft_answer}'. "
-            f"Look at the image again. Are there any visual details (lesions/fractures) "
-            f"you missed that contradict this?"
-        )
+        critique_prompt = get_reflexion_critique_prompt(draft_answer)
+
         # The critique context helps maintain conversation history
-        critique_context = f"Previous Question: {question}\n{rag_context}"
+        critique_context = get_reflexion_critique_context(question, rag_context)
+
         critique_response = self.llm.generate(image, critique_prompt, context=critique_context)
 
         # Refine (Final Answer + RAG)
-        refine_prompt = (
-            f"The original question was: '{question}'. "
-            f"Your initial answer was: '{draft_answer}'. "
-            f"Your critique was: '{critique_response}'. "
-            f"Based on the image and this critique, provide the final correct answer."
-        )
+        refine_prompt = get_reflexion_refine_prompt(question, draft_answer, critique_response)
+
         # We pass the RAG context again to ensure the final answer is grounded
         return self.llm.generate(image, refine_prompt, context=rag_context)
 

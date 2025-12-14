@@ -10,15 +10,17 @@ from datasets import load_dataset
 from llm_adapter import get_llm_adapter
 from rag_pipeline import RAGPipeline
 from retriever import MultimodalRetriever
+from logger_utils import setup_logger, print_system_config, print_final_report
+
 
 # ==========================================
 # 0. CONFIGURATION
 # ==========================================
 CONFIG = {
     "TEST_MODE": True,      # Run 5 samples only
-    "USE_RAG": True,        # Toggle RAG
-    "USE_RERANKER": True,   # Toggle Rerank
-    "USE_REFLEXION": True,  # Toggle Reflexion Thinking
+    "USE_RAG": False,        # Toggle RAG
+    "USE_RERANKER": False,   # Toggle Rerank
+    "USE_REFLEXION": False,  # Toggle Reflexion Thinking
 
     "MODEL_CHOICE": "microsoft/llava-med-v1.5-mistral-7b",
     # "MODEL_CHOICE": "Qwen/Qwen2-VL-2B-Instruct",
@@ -43,21 +45,6 @@ CONFIG = {
 # ==========================================
 # 1. LOGGING & UTILS
 # ==========================================
-class Logger(object):
-    def __init__(self, filename):
-        self.terminal = sys.stdout
-        self.log = open(filename, "w", encoding="utf-8")
-
-    def write(self, message):
-        self.terminal.write(message)
-        self.log.write(message)
-        self.log.flush()
-
-    def flush(self):
-        self.terminal.flush()
-        self.log.flush()
-
-
 def normalize_text(text):
     return text.lower().translate(str.maketrans('', '', string.punctuation)).strip()
 
@@ -96,28 +83,10 @@ else:
     base_name = f"{tech_tag}_{model_short}_{timestamp}"
 
 OUTPUT_FILE = f"{output_dir}/results_{base_name}.csv"
-LOG_FILE = f"{output_dir}/log_{base_name}.txt"
 
-sys.stdout = Logger(LOG_FILE)
-print("\n" + "="*40)
-print("⚙️ SYSTEM CONFIGURATION")
-print("="*40)
-print(f"   [General]")
-print(f"   • Test Mode:        {CONFIG['TEST_MODE']}")
-print(f"   • Dataset:          {CONFIG['DATASET_ID']}")
-print(f"   • Model:            {CONFIG['MODEL_CHOICE']}")
-print(f"\n   [Technique]")
-if CONFIG["USE_RAG"]:
-    print(f"   • RAG:              {CONFIG['USE_RAG']}")
-    print(f"     - Retrieval K:    {CONFIG['RAG_K']}")
-    print(f"     - Alpha:          {CONFIG['RAG_ALPHA']}")
-if CONFIG["USE_RERANKER"]:
-    print(f"   • Reranker:         {CONFIG['USE_RERANKER']}")
-    print(f"     - Reranker Model: {CONFIG['RERANKER_MODEL']}")
-    print(f"     - Reranker K:     {CONFIG['RERANK_K']}")
-if CONFIG["USE_REFLEXION"]:
-    print(f"   • Reflexion:        {CONFIG['USE_REFLEXION']}")
-print("="*40 + "\n")
+# Setup Logging via Utils
+setup_logger(output_dir, base_name)
+print_system_config(CONFIG, tech_tag)
 
 
 # ==========================================
@@ -259,17 +228,16 @@ else:
     bert_score = rouge_score = bleu_score = 0.0
 
 # Final Console Report
-print("\n" + "=" * 40)
-print(f"✅ FINAL RESULTS: {tech_tag} - {CONFIG['MODEL_CHOICE']}")
-print("-" * 40)
-print(f"Closed Accuracy: {closed_acc:.2f}%")
-print(f"Open BERTScore:  {bert_score:.2f}")
-print(f"Open ROUGE-L:    {rouge_score:.2f}")
-print(f"Open BLEU-1:     {bleu_score:.2f}")
-print("-" * 40)
-print(f"Total Time:      {total_time:.2f} sec")
-print(f"Avg Time/Sample: {avg_time:.2f} sec")
-print("=" * 40)
+print_final_report(
+    tech_tag=tech_tag,
+    model_choice=CONFIG['MODEL_CHOICE'],
+    closed_acc=closed_acc,
+    bert_score=bert_score,
+    rouge_score=rouge_score,
+    bleu_score=bleu_score,
+    total_time=total_time,
+    avg_time=avg_time
+)
 
 # Save Files
 df.to_csv(OUTPUT_FILE, index=False)

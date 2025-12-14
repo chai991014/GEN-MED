@@ -4,6 +4,7 @@ import open_clip
 import faiss
 from tqdm import tqdm
 from PIL import Image
+from prompt_template import get_retrieval_context_string
 
 
 class MultimodalRetriever:
@@ -186,10 +187,5 @@ class MultimodalRetriever:
         return results
 
     def format_prompt(self, examples):
-        """Formats retrieved examples into a context string."""
-        if not examples:
-            return ""
-        context = "Reference Examples:\n"
-        for i, ex in enumerate(examples):
-            context += f"Ex {i + 1}: Q: {ex['question']} -> A: {ex['answer']}\n"
-        return context
+        """"Formats retrieved examples into a context string."""
+        return get_retrieval_context_string(examples)

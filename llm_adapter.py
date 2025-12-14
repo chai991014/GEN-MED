@@ -1,29 +1,17 @@
 import torch
 import sys
-
-
-def format_inference_prompt(question, context=""):
-    """Unified logic for inference input, injecting context if present."""
-    if context:
-        return (
-            f"{context}\n"
-            f"Based on the examples above and the image, answer this:\n"
-            f"Question: {question}"
-        )
-    return question
-
-
-def format_judge_prompt(question, raw_answer):
-    """Unified logic for judge input."""
-    return (
-        f"Question: {question}\n"
-        f"Answer: {raw_answer}\n"
-        "Does this answer mean Yes or No? Answer with one word."
-    )
+from prompt_template import (
+    get_inference_prompt,
+    get_judge_prompt,
+    get_reflexion_critique_prompt,
+    get_reflexion_critique_context,
+    get_reflexion_refine_prompt
+)
 
 
 class BaseVQAAdapter:
     """Abstract Base Class for VQA Model Adapters."""
+
     def load(self): raise NotImplementedError
     def generate(self, image, question, context=""): raise NotImplementedError
     def judge_answer(self, image, question, raw_answer): raise NotImplementedError
@@ -36,27 +24,19 @@ class BaseVQAAdapter:
         draft_answer = self.generate(image, question)
 
         # 2. Critique
-        critique_prompt = (
-            f"You previously answered: '{draft_answer}'. "
-            f"Look at the image again. Are there any visual details (lesions/fractures) "
-            f"you missed that contradict this?"
-        )
-        # We pass the original question as context so the model knows what it's critiquing
-        critique_context = f"Original Question: {question}"
+        critique_prompt = get_reflexion_critique_prompt(draft_answer)
+        critique_context = get_reflexion_critique_context(question)
         critique_response = self.generate(image, critique_prompt, context=critique_context)
 
         # 3. Refine
-        refine_prompt = (
-            f"The original question was: '{question}'. "
-            f"Your initial answer was: '{draft_answer}'. "
-            f"Your critique was: '{critique_response}'. "
-            f"Based on the image and this critique, provide the final correct answer."
-        )
+        refine_prompt = get_reflexion_refine_prompt(question, draft_answer, critique_response)
+
         return self.generate(image, refine_prompt)
 
 
 class LLaVAAdapter(BaseVQAAdapter):
     """Adapter for LLaVA-Med models."""
+
     def __init__(self, repo_path, model_path):
         self.repo_path = repo_path
         self.model_path = model_path
@@ -111,13 +91,13 @@ class LLaVAAdapter(BaseVQAAdapter):
         return self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
     def generate(self, image, question, context=""):
-        text = format_inference_prompt(question, context)
+        text = get_inference_prompt(question, context)
         qs = self.tok_img + "\n" + text
         prompt = f"USER: {qs}\nASSISTANT:"
         return self._run_inference(image, prompt, max_tokens=128)
 
     def judge_answer(self, image, question, raw_answer):
-        judge_q = format_judge_prompt(question, raw_answer)
+        judge_q = get_judge_prompt(question, raw_answer)
         qs = self.tok_img + "\n" + judge_q
         prompt = f"USER: {qs}\nASSISTANT:"
         return self._run_inference(image, prompt, max_tokens=5)
@@ -125,6 +105,7 @@ class LLaVAAdapter(BaseVQAAdapter):
 
 class QwenAdapter(BaseVQAAdapter):
     """Adapter for Qwen-VL models."""
+
     def __init__(self, model_id):
         self.model_id = model_id
         self.model = None
@@ -174,11 +155,11 @@ class QwenAdapter(BaseVQAAdapter):
                                            clean_up_tokenization_spaces=False)[0].strip()
 
     def generate(self, image, question, context=""):
-        text = format_inference_prompt(question, context)
+        text = get_inference_prompt(question, context)
         return self._run_inference(image, text, max_tokens=128)
 
     def judge_answer(self, image, question, raw_answer):
-        judge_q = format_judge_prompt(question, raw_answer)
+        judge_q = get_judge_prompt(question, raw_answer)
         return self._run_inference(image, judge_q, max_tokens=5)
 
 
