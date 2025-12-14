@@ -38,36 +38,68 @@ class RAGPipeline:
         """Delegates indexing to the retrieval engine."""
         self.retriever.build_index(dataset)
 
+    def _retrieve_context(self, image, question):
+        """Helper to retrieve and format context string."""
+        initial_k = self.rerank_k if self.use_reranker else self.k
+
+        retrieved_items = self.retriever.retrieve(
+            query_text=question,
+            query_image=image,
+            k=initial_k,
+            alpha=self.alpha
+        )
+
+        if self.use_reranker:
+            retrieved_items = self.reranker.rerank(
+                query=question,
+                candidates=retrieved_items,
+                top_k=self.k
+            )
+
+        if retrieved_items:
+            return self.retriever.format_prompt(retrieved_items)
+        return ""
+
     def generate(self, image, question, context=""):
         """
         Executes the RAG flow: Retrieve -> Contextualize -> Generate.
         """
         # If external context isn't provided, use RAG to find it
         if not context:
-            # If reranking, fetch 20 candidates
-            initial_k = self.rerank_k if self.use_reranker else self.k
-
-            retrieved_items = self.retriever.retrieve(
-                query_text=question,
-                query_image=image,
-                k=initial_k,
-                alpha=self.alpha
-            )
-
-            if self.use_reranker:
-                retrieved_items = self.reranker.rerank(
-                    query=question,
-                    candidates=retrieved_items,
-                    top_k=self.k
-                )
-
-            if retrieved_items:
-                context = self.retriever.format_prompt(retrieved_items)
-            else:
-                context = ""
+            context = self._retrieve_context(image, question)
 
         # Pass to the underlying llm adapter
         return self.llm.generate(image, question, context=context)
+
+    def reflexion_generate(self, image, question):
+        """
+        Implements Reflexion (Draft -> Critique -> Refine) WITH RAG Context.
+        """
+        # Retrieve Context ONCE
+        rag_context = self._retrieve_context(image, question)
+
+        # Draft (Fast Thinking + RAG)
+        draft_answer = self.llm.generate(image, question, context=rag_context)
+
+        # Critique (Self-Correction)
+        critique_prompt = (
+            f"You previously answered: '{draft_answer}'. "
+            f"Look at the image again. Are there any visual details (lesions/fractures) "
+            f"you missed that contradict this?"
+        )
+        # The critique context helps maintain conversation history
+        critique_context = f"Previous Question: {question}\n{rag_context}"
+        critique_response = self.llm.generate(image, critique_prompt, context=critique_context)
+
+        # Refine (Final Answer + RAG)
+        refine_prompt = (
+            f"The original question was: '{question}'. "
+            f"Your initial answer was: '{draft_answer}'. "
+            f"Your critique was: '{critique_response}'. "
+            f"Based on the image and this critique, provide the final correct answer."
+        )
+        # We pass the RAG context again to ensure the final answer is grounded
+        return self.llm.generate(image, refine_prompt, context=rag_context)
 
     def judge_answer(self, image, question, raw_answer):
         """Pass-through to the LLM (Judges don't use retrieval)."""

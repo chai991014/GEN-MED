@@ -16,16 +16,16 @@ from retriever import MultimodalRetriever
 # ==========================================
 CONFIG = {
     "TEST_MODE": True,      # Run 5 samples only
-    "USE_RAG": False,        # Toggle RAG
-    "USE_RERANKER": False,   # Toggle Rerank
+    "USE_RAG": True,        # Toggle RAG
+    "USE_RERANKER": True,   # Toggle Rerank
     "USE_REFLEXION": True,  # Toggle Reflexion Thinking
 
-    # "MODEL_CHOICE": "microsoft/llava-med-v1.5-mistral-7b",
+    "MODEL_CHOICE": "microsoft/llava-med-v1.5-mistral-7b",
     # "MODEL_CHOICE": "Qwen/Qwen2-VL-2B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen2-VL-7B-Instruct",  # [OOM]
     # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-3B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-7B-Instruct",  # [OOM]
-    "MODEL_CHOICE": "Qwen/Qwen3-VL-4B-Instruct",
+    # "MODEL_CHOICE": "Qwen/Qwen3-VL-4B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen3-VL-8B-Instruct",  # [OOM]
 
     "DATASET_ID": "flaviagiammarino/vqa-rad",
@@ -63,14 +63,18 @@ def normalize_text(text):
 
 
 # Setup paths
+tags = []
+if CONFIG["USE_RAG"]:
+    tags.append("RAG")
 if CONFIG["USE_RERANKER"]:
-    tech_tag = "Rerank_RAG"
-elif CONFIG["USE_RAG"]:
-    tech_tag = "RAG"
-elif CONFIG["USE_REFLEXION"]:
-    tech_tag = "Reflexion"
-else:
+    tags.append("Rerank")
+if CONFIG["USE_REFLEXION"]:
+    tags.append("Reflexion")
+
+if not tags:
     tech_tag = "ZeroShot"
+else:
+    tech_tag = "+".join(tags)
 
 model_map = {
     "microsoft/llava-med-v1.5-mistral-7b": "LLaVA-Med",
@@ -99,20 +103,20 @@ print("\n" + "="*40)
 print("⚙️ SYSTEM CONFIGURATION")
 print("="*40)
 print(f"   [General]")
-print(f"   • Test Mode:      {CONFIG['TEST_MODE']}")
-print(f"   • Dataset:        {CONFIG['DATASET_ID']}")
-print(f"   • Model:          {CONFIG['MODEL_CHOICE']}")
+print(f"   • Test Mode:        {CONFIG['TEST_MODE']}")
+print(f"   • Dataset:          {CONFIG['DATASET_ID']}")
+print(f"   • Model:            {CONFIG['MODEL_CHOICE']}")
 print(f"\n   [Technique]")
 if CONFIG["USE_RAG"]:
-    print(f"   • RAG:            {CONFIG['USE_RAG']}")
-    print(f"   • Retrieval K:    {CONFIG['RAG_K']}")
-    print(f"   • Alpha:          {CONFIG['RAG_ALPHA']}")
+    print(f"   • RAG:              {CONFIG['USE_RAG']}")
+    print(f"     - Retrieval K:    {CONFIG['RAG_K']}")
+    print(f"     - Alpha:          {CONFIG['RAG_ALPHA']}")
 if CONFIG["USE_RERANKER"]:
-    print(f"   • Reranker:       {CONFIG['USE_RERANKER']}")
-    print(f"   • Reranker Model: {CONFIG['RERANKER_MODEL']}")
-    print(f"   • Reranker K:     {CONFIG['RERANK_K']}")
+    print(f"   • Reranker:         {CONFIG['USE_RERANKER']}")
+    print(f"     - Reranker Model: {CONFIG['RERANKER_MODEL']}")
+    print(f"     - Reranker K:     {CONFIG['RERANK_K']}")
 if CONFIG["USE_REFLEXION"]:
-    print(f"   • Reflexion:      {CONFIG['USE_REFLEXION']}")
+    print(f"   • Reflexion:        {CONFIG['USE_REFLEXION']}")
 print("="*40 + "\n")
 
 
@@ -132,7 +136,7 @@ llm.load()
 
 # C. Configure Execution Pipeline
 if CONFIG["USE_RAG"]:
-    print("\n🔍 Initializing RAG Pipeline...")
+    print(f"\n🔍 Initializing RAG Pipeline ({tech_tag})...")
     retriever_engine = MultimodalRetriever(device="cpu")
 
     print("📂 Loading Knowledge Base (Train Split)...")
