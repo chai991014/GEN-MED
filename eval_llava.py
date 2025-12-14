@@ -6,7 +6,6 @@ import os
 import string
 from tqdm import tqdm
 from datasets import load_dataset
-from PIL import Image
 
 # ==========================================
 # 1. USER CONFIGURATION
@@ -16,13 +15,28 @@ MODEL_CHOICE = "QWEN"
 
 # Paths
 DATASET_ID = "flaviagiammarino/vqa-rad"
-OUTPUT_FILE = f"./result/results_{MODEL_CHOICE.lower()}.csv"
 
 # Path to the cloned folder (Relative to this script)
 LLAVA_REPO_PATH = os.path.abspath("./LLaVA-Med")
 # Path to the model weights (Hugging Face ID or local path)
 LLAVA_MODEL_PATH = "microsoft/llava-med-v1.5-mistral-7b"
-QWEN_MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
+# QWEN_MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
+# QWEN_MODEL_ID = "Qwen/Qwen2-VL-7B-Instruct" [OOM]
+# QWEN_MODEL_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
+# QWEN_MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct" [OOM]
+QWEN_MODEL_ID = "Qwen/Qwen3-VL-4B-Instruct"
+# QWEN_MODEL_ID = "Qwen/Qwen3-VL-8B-Instruct" [OOM]
+
+if MODEL_CHOICE == "LLAVA":
+    active_id = LLAVA_MODEL_PATH
+elif MODEL_CHOICE == "QWEN":
+    active_id = QWEN_MODEL_ID
+else:
+    raise ValueError("Set MODEL_CHOICE to 'LLAVA' or 'QWEN'")
+
+safe_name = active_id.replace("/", "_")
+os.makedirs("./result", exist_ok=True)
+OUTPUT_FILE = f"./result/results_{safe_name}.csv"
 
 
 # ==========================================
@@ -107,16 +121,24 @@ class LLavaHandler(VQAModel):
 class QwenHandler(VQAModel):
     def load(self):
         print(f"🚀 Loading Qwen2-VL from {QWEN_MODEL_ID}...")
-        from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
+        from transformers import Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, Qwen3VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
 
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
         )
-
-        self.model = Qwen2VLForConditionalGeneration.from_pretrained(
-            QWEN_MODEL_ID, quantization_config=bnb_config, device_map="auto"
-        )
+        if "Qwen3" in QWEN_MODEL_ID:
+            self.model = Qwen3VLForConditionalGeneration.from_pretrained(
+                QWEN_MODEL_ID, quantization_config=bnb_config, device_map="auto"
+            )
+        elif "Qwen2.5" in QWEN_MODEL_ID:
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                QWEN_MODEL_ID, quantization_config=bnb_config, device_map="auto"
+            )
+        else:
+            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+                QWEN_MODEL_ID, quantization_config=bnb_config, device_map="auto"
+            )
         # Higher resolution settings
         self.processor = AutoProcessor.from_pretrained(QWEN_MODEL_ID, min_pixels=256 * 256, max_pixels=1280 * 1280)
         print("✅ Qwen2-VL loaded!")
@@ -167,8 +189,8 @@ handler.load()
 print("📂 Loading Dataset...")
 dataset = load_dataset(DATASET_ID, split="test")
 
-# dataset = dataset.select(range(20))
-# print("⚠️ WARNING: Running in Test Mode (20 samples only)")
+dataset = dataset.select(range(20))
+print("⚠️ WARNING: Running in Test Mode (20 samples only)")
 
 bert_metric = evaluate.load("bertscore")
 rouge_metric = evaluate.load("rouge")
