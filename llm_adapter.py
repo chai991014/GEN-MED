@@ -2,12 +2,18 @@ import torch
 import sys
 
 
-def get_inference_text(question):
-    """Unified logic for inference input."""
+def format_inference_prompt(question, context=""):
+    """Unified logic for inference input, injecting context if present."""
+    if context:
+        return (
+            f"{context}\n"
+            f"Based on the examples above and the image, answer this:\n"
+            f"Question: {question}"
+        )
     return question
 
 
-def get_judge_text(question, raw_answer):
+def format_judge_prompt(question, raw_answer):
     """Unified logic for judge input."""
     return (
         f"Question: {question}\n"
@@ -16,13 +22,15 @@ def get_judge_text(question, raw_answer):
     )
 
 
-class VQAModel:
+class BaseVQAAdapter:
+    """Abstract Base Class for VQA Model Adapters."""
     def load(self): raise NotImplementedError
-    def generate(self, image, question): raise NotImplementedError
+    def generate(self, image, question, context=""): raise NotImplementedError
     def judge_answer(self, image, question, raw_answer): raise NotImplementedError
 
 
-class LLavaHandler(VQAModel):
+class LLaVAAdapter(BaseVQAAdapter):
+    """Adapter for LLaVA-Med models."""
     def __init__(self, repo_path, model_path):
         self.repo_path = repo_path
         self.model_path = model_path
@@ -76,20 +84,21 @@ class LLavaHandler(VQAModel):
             )
         return self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
-    def generate(self, image, question):
-        text = get_inference_text(question)
+    def generate(self, image, question, context=""):
+        text = format_inference_prompt(question, context)
         qs = self.tok_img + "\n" + text
         prompt = f"USER: {qs}\nASSISTANT:"
         return self._run_inference(image, prompt, max_tokens=128)
 
     def judge_answer(self, image, question, raw_answer):
-        judge_q = get_judge_text(question, raw_answer)
+        judge_q = format_judge_prompt(question, raw_answer)
         qs = self.tok_img + "\n" + judge_q
         prompt = f"USER: {qs}\nASSISTANT:"
         return self._run_inference(image, prompt, max_tokens=5)
 
 
-class QwenHandler(VQAModel):
+class QwenAdapter(BaseVQAAdapter):
+    """Adapter for Qwen-VL models."""
     def __init__(self, model_id):
         self.model_id = model_id
         self.model = None
@@ -138,24 +147,25 @@ class QwenHandler(VQAModel):
         return self.processor.batch_decode(ids_trimmed, skip_special_tokens=True,
                                            clean_up_tokenization_spaces=False)[0].strip()
 
-    def generate(self, image, question):
-        text = get_inference_text(question)
+    def generate(self, image, question, context=""):
+        text = format_inference_prompt(question, context)
         return self._run_inference(image, text, max_tokens=128)
 
     def judge_answer(self, image, question, raw_answer):
-        judge_q = get_judge_text(question, raw_answer)
+        judge_q = format_judge_prompt(question, raw_answer)
         return self._run_inference(image, judge_q, max_tokens=5)
 
 
-def get_llm_handler(model_choice, **kwargs):
+def get_llm_adapter(model_choice, **kwargs):
+    """Factory function to instantiate the correct model adapter."""
     model_name = model_choice.lower()
     if "llava" in model_name:
-        return LLavaHandler(
+        return LLaVAAdapter(
             repo_path=kwargs.get('repo_path'),
             model_path=kwargs.get('model_path', model_choice)
         )
     elif "qwen" in model_name:
-        return QwenHandler(
+        return QwenAdapter(
             model_id=kwargs.get('model_id', model_choice)
         )
     else:
