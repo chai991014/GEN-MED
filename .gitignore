@@ -2,3 +2,4 @@
 __pycache__
 LLaVA-Med/
 result/
+rag_cache/
