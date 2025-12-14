@@ -15,9 +15,10 @@ from retriever import MultimodalRetriever
 # 0. CONFIGURATION
 # ==========================================
 CONFIG = {
-    "TEST_MODE": True,  # True = Run 5 samples only
-    "USE_RAG": True,  # Toggle RAG on/off
-    "USE_RERANKER": True,  # Toggle Rerank on/off
+    "TEST_MODE": True,      # Run 5 samples only
+    "USE_RAG": False,        # Toggle RAG
+    "USE_RERANKER": False,   # Toggle Rerank
+    "USE_REFLEXION": True,  # Toggle Reflexion Thinking
 
     # "MODEL_CHOICE": "microsoft/llava-med-v1.5-mistral-7b",
     # "MODEL_CHOICE": "Qwen/Qwen2-VL-2B-Instruct",
@@ -66,6 +67,8 @@ if CONFIG["USE_RERANKER"]:
     tech_tag = "Rerank_RAG"
 elif CONFIG["USE_RAG"]:
     tech_tag = "RAG"
+elif CONFIG["USE_REFLEXION"]:
+    tech_tag = "Reflexion"
 else:
     tech_tag = "ZeroShot"
 
@@ -99,13 +102,17 @@ print(f"   [General]")
 print(f"   • Test Mode:      {CONFIG['TEST_MODE']}")
 print(f"   • Dataset:        {CONFIG['DATASET_ID']}")
 print(f"   • Model:          {CONFIG['MODEL_CHOICE']}")
-print(f"\n   [RAG Pipeline]")
-print(f"   • Enabled:        {CONFIG['USE_RAG']}")
-print(f"   • Retrieval K:    {CONFIG['RAG_K']}")
-print(f"   • Alpha:          {CONFIG['RAG_ALPHA']}")
-print(f"   • Reranker:       {CONFIG['USE_RERANKER']}")
-print(f"   • Reranker Model: {CONFIG['RERANKER_MODEL'] if CONFIG['USE_RERANKER'] else 'N/A'}")
-print(f"   • Reranker K:     {CONFIG['RERANK_K'] if CONFIG['USE_RERANKER'] else 'N/A'}")
+print(f"\n   [Technique]")
+if CONFIG["USE_RAG"]:
+    print(f"   • RAG:            {CONFIG['USE_RAG']}")
+    print(f"   • Retrieval K:    {CONFIG['RAG_K']}")
+    print(f"   • Alpha:          {CONFIG['RAG_ALPHA']}")
+if CONFIG["USE_RERANKER"]:
+    print(f"   • Reranker:       {CONFIG['USE_RERANKER']}")
+    print(f"   • Reranker Model: {CONFIG['RERANKER_MODEL']}")
+    print(f"   • Reranker K:     {CONFIG['RERANK_K']}")
+if CONFIG["USE_REFLEXION"]:
+    print(f"   • Reflexion:      {CONFIG['USE_REFLEXION']}")
 print("="*40 + "\n")
 
 
@@ -152,7 +159,7 @@ if CONFIG["USE_RAG"]:
         )
     inference_engine.build_index(train_dataset)
 else:
-    print("\n🛡️ Using Standard Pipeline (No RAG)...")
+    print(f"\n🛡️ Using Standard Pipeline ({tech_tag})...")
     inference_engine = llm
 
 
@@ -183,7 +190,10 @@ for i, item in tqdm(enumerate(dataset), total=len(dataset)):
         gt = str(item['answer'])
 
         # 1. Generate
-        raw_pred = inference_engine.generate(image, question)
+        if CONFIG["USE_REFLEXION"]:
+            raw_pred = inference_engine.reflexion_generate(image, question)
+        else:
+            raw_pred = inference_engine.generate(image, question)
 
         # 2. Normalize & Categorize
         clean_gt = normalize_text(gt)
@@ -230,7 +240,7 @@ closed_acc = df[df['type'] == 'CLOSED']['exact_match'].mean() * 100 if not df[df
 # NLP Metrics
 open_df = df[df['type'] == 'OPEN']
 if not open_df.empty:
-    print("Computing NLP Metrics...")
+    print("📊 Computing NLP Metrics...")
     preds = list(open_df['final_prediction'])
     refs = list(open_df['ground_truth'])
 

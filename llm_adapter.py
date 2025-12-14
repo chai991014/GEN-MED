@@ -28,6 +28,32 @@ class BaseVQAAdapter:
     def generate(self, image, question, context=""): raise NotImplementedError
     def judge_answer(self, image, question, raw_answer): raise NotImplementedError
 
+    def reflexion_generate(self, image, question):
+        """
+        Implements the 'Draft -> Critique -> Refine' loop.
+        """
+        # 1. Draft
+        draft_answer = self.generate(image, question)
+
+        # 2. Critique
+        critique_prompt = (
+            f"You previously answered: '{draft_answer}'. "
+            f"Look at the image again. Are there any visual details (lesions/fractures) "
+            f"you missed that contradict this?"
+        )
+        # We pass the original question as context so the model knows what it's critiquing
+        critique_context = f"Original Question: {question}"
+        critique_response = self.generate(image, critique_prompt, context=critique_context)
+
+        # 3. Refine
+        refine_prompt = (
+            f"The original question was: '{question}'. "
+            f"Your initial answer was: '{draft_answer}'. "
+            f"Your critique was: '{critique_response}'. "
+            f"Based on the image and this critique, provide the final correct answer."
+        )
+        return self.generate(image, refine_prompt)
+
 
 class LLaVAAdapter(BaseVQAAdapter):
     """Adapter for LLaVA-Med models."""
