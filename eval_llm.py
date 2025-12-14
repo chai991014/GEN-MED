@@ -11,20 +11,18 @@ from llm_handler import get_llm_handler
 # ==========================================
 # 0. CONFIGURATION SETTING
 # ==========================================
-TEST_MODE = False
-
-# Choose: "LLAVA", "QWEN"
-MODEL_CHOICE = "LLAVA"
+TEST_MODE = True
 DATASET_ID = "flaviagiammarino/vqa-rad"
 
+MODEL_CHOICE = "microsoft/llava-med-v1.5-mistral-7b"
+# MODEL_CHOICE = "Qwen/Qwen2-VL-2B-Instruct"
+# MODEL_CHOICE = "Qwen/Qwen2-VL-7B-Instruct" [OOM]
+# MODEL_CHOICE = "Qwen/Qwen2.5-VL-3B-Instruct"
+# MODEL_CHOICE = "Qwen/Qwen2.5-VL-7B-Instruct" [OOM]
+# MODEL_CHOICE = "Qwen/Qwen3-VL-4B-Instruct"
+# MODEL_CHOICE = "Qwen/Qwen3-VL-8B-Instruct" [OOM]
+
 LLAVA_REPO_PATH = os.path.abspath("./LLaVA-Med")
-LLAVA_MODEL_PATH = "microsoft/llava-med-v1.5-mistral-7b"
-# QWEN_MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
-# QWEN_MODEL_ID = "Qwen/Qwen2-VL-7B-Instruct" [OOM]
-# QWEN_MODEL_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
-# QWEN_MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct" [OOM]
-QWEN_MODEL_ID = "Qwen/Qwen3-VL-4B-Instruct"
-# QWEN_MODEL_ID = "Qwen/Qwen3-VL-8B-Instruct" [OOM]
 
 
 # ==========================================
@@ -46,20 +44,22 @@ class Logger(object):
 
 
 llm_params = {}
+model_family = MODEL_CHOICE.lower()
 
-if MODEL_CHOICE == "LLAVA":
-    active_id = LLAVA_MODEL_PATH
-    llm_params = {"repo_path": LLAVA_REPO_PATH, "model_path": LLAVA_MODEL_PATH}
-
-elif MODEL_CHOICE == "QWEN":
-    active_id = QWEN_MODEL_ID
-    llm_params = {"model_id": QWEN_MODEL_ID}
-
+if "llava" in model_family:
+    llm_params = {
+        "repo_path": LLAVA_REPO_PATH,
+        "model_path": MODEL_CHOICE
+    }
+elif "qwen" in model_family:
+    llm_params = {
+        "model_id": MODEL_CHOICE
+    }
 else:
-    raise ValueError("Set MODEL_CHOICE to 'LLAVA' or 'QWEN'")
+    raise ValueError(f"Could not determine model family from string: {MODEL_CHOICE}")
 
 
-safe_name = active_id.replace("/", "_")
+safe_name = MODEL_CHOICE.replace("/", "_")
 os.makedirs("./result", exist_ok=True)
 if TEST_MODE:
     OUTPUT_FILE = f"./result/Test5_results_{safe_name}.csv"
@@ -198,7 +198,7 @@ print(f"📄 Detailed predictions saved to {OUTPUT_FILE}")
 # Save Summary
 summary_file = OUTPUT_FILE.replace(".csv", "_summary.txt")
 with open(summary_file, "w") as f:
-    f.write(f"Model: {MODEL_CHOICE} ({active_id})\n")
+    f.write(f"Model: {MODEL_CHOICE}\n")
     f.write("=" * 30 + "\n")
     f.write(f"Closed Accuracy: {closed_acc:.2f}%\n")
     f.write(f"Open BERTScore:  {bert_score:.2f}\n")

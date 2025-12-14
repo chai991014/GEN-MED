@@ -35,7 +35,6 @@ class LLavaHandler(VQAModel):
     def load(self):
         print(f"🚀 Loading LLaVA-Med from {self.model_path}...")
 
-        # Add local repo to Python path
         if self.repo_path not in sys.path:
             sys.path.append(self.repo_path)
 
@@ -44,7 +43,6 @@ class LLavaHandler(VQAModel):
             from llava.mm_utils import tokenizer_image_token
             from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
 
-            # Load with 4-bit quantization
             self.tokenizer, self.model, self.image_processor, self.context_len = load_pretrained_model(
                 model_path=self.model_path,
                 model_base=None,
@@ -59,7 +57,6 @@ class LLavaHandler(VQAModel):
 
         except ImportError as e:
             print(f"❌ Error: {e}")
-            print(f"Could not find 'llava' module. Ensure '{self.repo_path}' exists.")
             sys.exit(1)
 
     def _run_inference(self, image, prompt, max_tokens=128):
@@ -151,9 +148,15 @@ class QwenHandler(VQAModel):
 
 
 def get_llm_handler(model_choice, **kwargs):
-    if model_choice == "LLAVA":
-        return LLavaHandler(repo_path=kwargs.get('repo_path'), model_path=kwargs.get('model_path'))
-    elif model_choice == "QWEN":
-        return QwenHandler(model_id=kwargs.get('model_id'))
+    model_name = model_choice.lower()
+    if "llava" in model_name:
+        return LLavaHandler(
+            repo_path=kwargs.get('repo_path'),
+            model_path=kwargs.get('model_path', model_choice)
+        )
+    elif "qwen" in model_name:
+        return QwenHandler(
+            model_id=kwargs.get('model_id', model_choice)
+        )
     else:
-        raise ValueError(f"Unknown Model Choice: {model_choice}")
+        raise ValueError(f"Unknown Model Family for input: {model_choice}")
