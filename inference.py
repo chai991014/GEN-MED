@@ -9,7 +9,7 @@ from rag_pipeline import RAGPipeline
 # from amanda_pipeline import AMANDAPipeline
 from retriever import MultimodalRetriever
 from reranker import Reranker
-# from mevf.adapter import MEVFAdapter
+from mevf.adapter import MEVFAdapter
 from utils import get_config, normalize_text, print_final_report
 
 # ==========================================
@@ -22,13 +22,13 @@ CONFIG["LLAVA_REPO_PATH"] = os.path.abspath("./LLaVA-Med")
 # 2. PIPELINE INITIALIZATION
 # ==========================================
 if CONFIG["MODEL_CHOICE"] == "MEVF":
-    print(f"""\n🧠 Initializing Custom {CONFIG["TECH_TAG"]} Adapter...""")
-    # inference_engine = MEVFAdapter(
-    #     model_path=CONFIG["MEVF_WEIGHTS"],
-    #     maml_path=CONFIG["MAML_WEIGHTS"],
-    #     ae_path=CONFIG["AE_WEIGHTS"],
-    #     reasoning_model=CONFIG["REASONING_MODEL"]
-    # )
+    print(f"""🧠 Initializing Custom {CONFIG["TECH_TAG"]} Adapter...""")
+    inference_engine = MEVFAdapter(
+        model_path=CONFIG["MEVF_WEIGHTS"],
+        maml_path=CONFIG["MAML_WEIGHTS"],
+        ae_path=CONFIG["AE_WEIGHTS"],
+        reasoning_model=CONFIG["REASONING_MODEL"]
+    )
 else:
     # A. Prepare LLM Params
     llm_params = {}

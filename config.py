@@ -11,12 +11,11 @@ CONFIG = {
     # ==========================================
     # MEVF Settings
     # ==========================================
-    # "MODEL_CHOICE": "MEVF",
-    # MEVF Settings
-    "REASONING_MODEL": "BAN",
-    "MEVF_WEIGHTS": "saved_models/ban_mevf/epoch_20.pth",
-    "MAML_WEIGHTS": "./pretrained_maml.weights",
-    "AE_WEIGHTS": "./pretrained_ae.pth",
+    "MODEL_CHOICE": "MEVF",
+    "REASONING_MODEL": "SAN",
+    "MEVF_WEIGHTS": "./mevf/SAN_best_model.pth",
+    "MAML_WEIGHTS": "./mevf/pretrained_maml.weights",
+    "AE_WEIGHTS": "./mevf/pretrained_ae.pth",
 
     # ==========================================
     # LLM Model Selection
@@ -26,7 +25,7 @@ CONFIG = {
     # "MODEL_CHOICE": "Qwen/Qwen2-VL-7B-Instruct",  # [OOM]
     # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-3B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-7B-Instruct",  # [OOM]
-    "MODEL_CHOICE": "Qwen/Qwen3-VL-2B-Instruct",
+    # "MODEL_CHOICE": "Qwen/Qwen3-VL-2B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen3-VL-4B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen3-VL-8B-Instruct",  # [OOM]
 

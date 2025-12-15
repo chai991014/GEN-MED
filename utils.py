@@ -50,23 +50,26 @@ def print_system_config(config, tech_tag):
     print(f"   • Dataset         : {config.get('DATASET_ID')}")
     print(f"   • Model           : {config.get('MODEL_CHOICE')}")
 
-    if tech_tag == "AMANDA":
-        print(f"\n   [ AMANDA - MultiAgent RAG System ]")
-    elif tech_tag != "ZeroShot":
-        print(f"\n   [Technique]")
+    if config.get('MODEL_CHOICE') == "MEVF":
+        print(f"   • Reasoning Model : {config.get('REASONING_MODEL')}")
+    else:
+        if tech_tag == "AMANDA":
+            print(f"\n   [ AMANDA - MultiAgent RAG System ]")
+        elif tech_tag != "ZeroShot":
+            print(f"\n   [Technique]")
 
-    if config.get("USE_RAG"):
-        print(f"   • RAG             : Enabled")
-        print(f"     - Retrieval K   : {config.get('RAG_K')}")
-        print(f"     - Alpha         : {config.get('RAG_ALPHA')}")
+        if config.get("USE_RAG"):
+            print(f"   • RAG             : Enabled")
+            print(f"     - Retrieval K   : {config.get('RAG_K')}")
+            print(f"     - Alpha         : {config.get('RAG_ALPHA')}")
 
-    if config.get("RERANKER_MODEL") is not None:
-        print(f"   • Reranker        : Enabled")
-        print(f"     - Reranker Model: {config.get('RERANKER_MODEL')}")
-        print(f"     - Rerank K      : {config.get('RERANK_K')}")
+            if config.get("RERANKER_MODEL") is not None:
+                print(f"   • Reranker        : Enabled")
+                print(f"     - Reranker Model: {config.get('RERANKER_MODEL')}")
+                print(f"     - Rerank K      : {config.get('RERANK_K')}")
 
-    if config.get("USE_REFLEXION"):
-        print(f"   • Reflexion       : {config.get('USE_REFLEXION')}")
+        if config.get("USE_REFLEXION"):
+            print(f"   • Reflexion       : {config.get('USE_REFLEXION')}")
 
     print("=" * 60 + "\n")
 
@@ -121,14 +124,6 @@ def get_config():
     output_dir = "./result"
     os.makedirs(output_dir, exist_ok=True)
 
-    if CONFIG["MODEL_CHOICE"] == "MEVF":
-        CONFIG["TEST_MODE"] = False
-        CONFIG["USE_RAG"] = False
-        CONFIG["USE_REFLEXION"] = False
-        CONFIG["USE_AMANDA"] = False
-        tech_tag = f"""MEVF+{CONFIG["REASONING_MODEL"]}"""
-        base_name = f"{tech_tag}_{timestamp}"
-
     if CONFIG["USE_AMANDA"]:
         CONFIG["USE_RAG"] = True
         CONFIG["USE_REFLEXION"] = False
@@ -138,6 +133,14 @@ def get_config():
         base_name = f"Test5_{tech_tag}_{model_short}_{timestamp}"
     else:
         base_name = f"{tech_tag}_{model_short}_{timestamp}"
+
+    if CONFIG["MODEL_CHOICE"] == "MEVF":
+        CONFIG["TEST_MODE"] = False
+        CONFIG["USE_RAG"] = False
+        CONFIG["USE_REFLEXION"] = False
+        CONFIG["USE_AMANDA"] = False
+        tech_tag = f"""MEVF+{CONFIG["REASONING_MODEL"]}"""
+        base_name = f"{tech_tag}_{timestamp}"
 
     OUTPUT_FILE = f"{output_dir}/results_{base_name}.csv"
 
