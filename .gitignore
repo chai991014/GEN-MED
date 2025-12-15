@@ -3,3 +3,4 @@ __pycache__
 LLaVA-Med/
 result/
 rag_cache/
+llava_vqa_rad_lora/

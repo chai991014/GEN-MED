@@ -1,7 +1,6 @@
 import pandas as pd
 import evaluate
 import os
-import sys
 import time
 import string
 from datetime import datetime
@@ -27,6 +26,7 @@ CONFIG = {
     # "MODEL_CHOICE": "Qwen/Qwen2-VL-7B-Instruct",  # [OOM]
     # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-3B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-7B-Instruct",  # [OOM]
+    # "MODEL_CHOICE": "Qwen/Qwen3-VL-2B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen3-VL-4B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen3-VL-8B-Instruct",  # [OOM]
 
@@ -69,6 +69,7 @@ model_map = {
     "Qwen/Qwen2-VL-7B-Instruct": "Qwen2-7B",
     "Qwen/Qwen2.5-VL-3B-Instruct": "Qwen2.5-3B",
     "Qwen/Qwen2.5-VL-7B-Instruct": "Qwen2.5-7B",
+    "Qwen/Qwen3-VL-2B-Instruct": "Qwen3-2B",
     "Qwen/Qwen3-VL-4B-Instruct": "Qwen3-4B",
     "Qwen/Qwen3-VL-8B-Instruct": "Qwen3-8B",
 }
