@@ -2,14 +2,14 @@ import pandas as pd
 import evaluate
 import os
 import time
-import string
 from datetime import datetime
 from tqdm import tqdm
 from datasets import load_dataset
 from llm_adapter import get_llm_adapter
 from rag_pipeline import RAGPipeline
 from retriever import MultimodalRetriever
-from logger_utils import setup_logger, print_system_config, print_final_report
+from reranker import Reranker
+from utils import normalize_text, setup_logger, print_system_config, print_final_report
 
 
 # ==========================================
@@ -20,6 +20,7 @@ CONFIG = {
     "USE_RAG": False,        # Toggle RAG
     "USE_RERANKER": False,   # Toggle Rerank
     "USE_REFLEXION": False,  # Toggle Reflexion Thinking
+    # "USE_AMANDA": False,     # Toggle AMANDA Multi-Agent RAG Framework
 
     "MODEL_CHOICE": "microsoft/llava-med-v1.5-mistral-7b",
     # "MODEL_CHOICE": "Qwen/Qwen2-VL-2B-Instruct",
@@ -45,10 +46,6 @@ CONFIG = {
 # ==========================================
 # 1. LOGGING & UTILS
 # ==========================================
-def normalize_text(text):
-    return text.lower().translate(str.maketrans('', '', string.punctuation)).strip()
-
-
 # Setup paths
 tags = []
 if CONFIG["USE_RAG"]:
@@ -57,11 +54,18 @@ if CONFIG["USE_RERANKER"]:
     tags.append("Rerank")
 if CONFIG["USE_REFLEXION"]:
     tags.append("Reflexion")
+# if CONFIG["USE_AMANDA"]:
+#     tags.append("AMANDA")
 
 if not tags:
     tech_tag = "ZeroShot"
 else:
     tech_tag = "+".join(tags)
+
+# if CONFIG["USE_AMANDA"]:
+#     CONFIG["USE_RAG"] = True
+#     CONFIG["USE_RERANKER"] = True
+#     CONFIG["USE_REFLEXION"] = False
 
 model_map = {
     "microsoft/llava-med-v1.5-mistral-7b": "LLaVA-Med",
@@ -112,25 +116,35 @@ if CONFIG["USE_RAG"]:
     print("📂 Loading Knowledge Base (Train Split)...")
     train_dataset = load_dataset(CONFIG["DATASET_ID"], split="train")
 
-    # Wrap LLM with RAG Pipeline
     if CONFIG["USE_RERANKER"]:
-        inference_engine = RAGPipeline(
-            llm,
-            retriever_engine,
-            k=CONFIG["RAG_K"],
-            alpha=CONFIG["RAG_ALPHA"],
-            use_reranker=CONFIG["USE_RERANKER"],
-            reranker_model=CONFIG["RERANKER_MODEL"],
-            rerank_k=CONFIG["RERANK_K"],
+        reranker_engine = Reranker(
+            model_id=CONFIG["RERANKER_MODEL"],
             device="cpu"
         )
     else:
-        inference_engine = RAGPipeline(
-            llm,
-            retriever_engine,
-            k=CONFIG["RAG_K"],
-            alpha=CONFIG["RAG_ALPHA"]
-        )
+        reranker_engine = None
+
+    # if CONFIG["USE_AMANDA"]:
+    #     inference_engine = AMANDAPipeline(
+    #         llm,
+    #         retriever_engine,
+    #         reranker_engine=reranker_engine,
+    #         k=CONFIG["RAG_K"],
+    #         alpha=CONFIG["RAG_ALPHA"],
+    #         rerank_k=CONFIG["RERANK_K"],
+    #         device="cpu"
+    #     )
+    # else:
+    # Wrap LLM with RAG Pipeline
+    inference_engine = RAGPipeline(
+        llm,
+        retriever_engine,
+        reranker_engine=reranker_engine,
+        k=CONFIG["RAG_K"],
+        alpha=CONFIG["RAG_ALPHA"],
+        rerank_k=CONFIG["RERANK_K"],
+    )
+
     inference_engine.build_index(train_dataset)
 else:
     print(f"\n🛡️ Using Standard Pipeline ({tech_tag})...")

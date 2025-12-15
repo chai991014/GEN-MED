@@ -1,5 +1,3 @@
-import torch
-from reranker import Reranker
 from prompt_template import (
     get_reflexion_critique_prompt,
     get_reflexion_critique_context,
@@ -16,24 +14,17 @@ class RAGPipeline:
     def __init__(self,
                  llm_adapter,
                  retrieval_engine,
+                 reranker_engine=None,
                  k=2,
                  alpha=0.5,
-                 use_reranker=False,
-                 reranker_model="BAAI/bge-reranker-base",
-                 rerank_k=20,
-                 device="cuda" if torch.cuda.is_available() else "cpu"):
+                 rerank_k=20):
 
-        self.device = device
         self.llm = llm_adapter
         self.retriever = retrieval_engine
+        self.reranker = reranker_engine
         self.k = k
         self.alpha = alpha
-
-        self.use_reranker = use_reranker
-        self.reranker_model = reranker_model
         self.rerank_k = rerank_k
-        if self.use_reranker:
-            self.reranker = Reranker(model_id=self.reranker_model, device=self.device)
 
     def load(self):
         """Ensures the underlying LLM is loaded."""
@@ -46,7 +37,7 @@ class RAGPipeline:
 
     def _retrieve_context(self, image, question):
         """Helper to retrieve and format context string."""
-        initial_k = self.rerank_k if self.use_reranker else self.k
+        initial_k = self.rerank_k if self.reranker is not None else self.k
 
         retrieved_items = self.retriever.retrieve(
             query_text=question,
@@ -55,7 +46,7 @@ class RAGPipeline:
             alpha=self.alpha
         )
 
-        if self.use_reranker:
+        if self.reranker is not None:
             retrieved_items = self.reranker.rerank(
                 query=question,
                 candidates=retrieved_items,

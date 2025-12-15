@@ -1,5 +1,10 @@
 import sys
 import os
+import string
+
+
+def normalize_text(text):
+    return text.lower().translate(str.maketrans('', '', string.punctuation)).strip()
 
 
 class DualLogger(object):
