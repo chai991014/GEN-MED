@@ -2,153 +2,85 @@ import pandas as pd
 import evaluate
 import os
 import time
-from datetime import datetime
 from tqdm import tqdm
 from datasets import load_dataset
 from llm_adapter import get_llm_adapter
 from rag_pipeline import RAGPipeline
+# from amanda_pipeline import AMANDAPipeline
 from retriever import MultimodalRetriever
 from reranker import Reranker
-from utils import normalize_text, setup_logger, print_system_config, print_final_report
-
-
-# ==========================================
-# 0. CONFIGURATION
-# ==========================================
-CONFIG = {
-    "TEST_MODE": True,      # Run 5 samples only
-    "USE_RAG": False,        # Toggle RAG
-    "USE_RERANKER": False,   # Toggle Rerank
-    "USE_REFLEXION": False,  # Toggle Reflexion Thinking
-    # "USE_AMANDA": False,     # Toggle AMANDA Multi-Agent RAG Framework
-
-    "MODEL_CHOICE": "microsoft/llava-med-v1.5-mistral-7b",
-    # "MODEL_CHOICE": "Qwen/Qwen2-VL-2B-Instruct",
-    # "MODEL_CHOICE": "Qwen/Qwen2-VL-7B-Instruct",  # [OOM]
-    # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-3B-Instruct",
-    # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-7B-Instruct",  # [OOM]
-    # "MODEL_CHOICE": "Qwen/Qwen3-VL-2B-Instruct",
-    # "MODEL_CHOICE": "Qwen/Qwen3-VL-4B-Instruct",
-    # "MODEL_CHOICE": "Qwen/Qwen3-VL-8B-Instruct",  # [OOM]
-
-    "DATASET_ID": "flaviagiammarino/vqa-rad",
-    "LLAVA_REPO_PATH": os.path.abspath("./LLaVA-Med"),
-
-    # RAG Settings
-    "RAG_K": 2,  # Number of exemplars to retrieve
-    # "RERANKER_MODEL": "BAAI/bge-reranker-base",
-    "RERANKER_MODEL": "ncbi/MedCPT-Cross-Encoder",
-    "RERANK_K": 20,  # Number of exemplars to retrieve for rerank
-    "RAG_ALPHA": 0.5,  # Alpha weight Text similarity and 1-Alpha weight Image similarity
-}
-
+# from mevf.adapter import MEVFAdapter
+from utils import get_config, normalize_text, print_final_report
 
 # ==========================================
-# 1. LOGGING & UTILS
+# 1. GET CONFIG
 # ==========================================
-# Setup paths
-tags = []
-if CONFIG["USE_RAG"]:
-    tags.append("RAG")
-if CONFIG["USE_RERANKER"]:
-    tags.append("Rerank")
-if CONFIG["USE_REFLEXION"]:
-    tags.append("Reflexion")
-# if CONFIG["USE_AMANDA"]:
-#     tags.append("AMANDA")
-
-if not tags:
-    tech_tag = "ZeroShot"
-else:
-    tech_tag = "+".join(tags)
-
-# if CONFIG["USE_AMANDA"]:
-#     CONFIG["USE_RAG"] = True
-#     CONFIG["USE_RERANKER"] = True
-#     CONFIG["USE_REFLEXION"] = False
-
-model_map = {
-    "microsoft/llava-med-v1.5-mistral-7b": "LLaVA-Med",
-    "Qwen/Qwen2-VL-2B-Instruct": "Qwen2-2B",
-    "Qwen/Qwen2-VL-7B-Instruct": "Qwen2-7B",
-    "Qwen/Qwen2.5-VL-3B-Instruct": "Qwen2.5-3B",
-    "Qwen/Qwen2.5-VL-7B-Instruct": "Qwen2.5-7B",
-    "Qwen/Qwen3-VL-2B-Instruct": "Qwen3-2B",
-    "Qwen/Qwen3-VL-4B-Instruct": "Qwen3-4B",
-    "Qwen/Qwen3-VL-8B-Instruct": "Qwen3-8B",
-}
-model_short = model_map.get(CONFIG["MODEL_CHOICE"], CONFIG["MODEL_CHOICE"].replace("/", "_"))
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-output_dir = "./result"
-os.makedirs(output_dir, exist_ok=True)
-
-if CONFIG["TEST_MODE"]:
-    base_name = f"Test5_{tech_tag}_{model_short}_{timestamp}"
-else:
-    base_name = f"{tech_tag}_{model_short}_{timestamp}"
-
-OUTPUT_FILE = f"{output_dir}/results_{base_name}.csv"
-
-# Setup Logging via Utils
-setup_logger(output_dir, base_name)
-print_system_config(CONFIG, tech_tag)
-
+CONFIG = get_config()
+CONFIG["LLAVA_REPO_PATH"] = os.path.abspath("./LLaVA-Med")
 
 # ==========================================
 # 2. PIPELINE INITIALIZATION
 # ==========================================
-# A. Prepare LLM Params
-llm_params = {}
-if "llava" in CONFIG["MODEL_CHOICE"].lower():
-    llm_params = {"repo_path": CONFIG["LLAVA_REPO_PATH"], "model_path": CONFIG["MODEL_CHOICE"]}
-elif "qwen" in CONFIG["MODEL_CHOICE"].lower():
-    llm_params = {"model_id": CONFIG["MODEL_CHOICE"]}
-
-# B. Load LLM Adapter
-llm = get_llm_adapter(CONFIG["MODEL_CHOICE"], **llm_params)
-llm.load()
-
-# C. Configure Execution Pipeline
-if CONFIG["USE_RAG"]:
-    print(f"\n🔍 Initializing RAG Pipeline ({tech_tag})...")
-    retriever_engine = MultimodalRetriever(device="cpu")
-
-    print("📂 Loading Knowledge Base (Train Split)...")
-    train_dataset = load_dataset(CONFIG["DATASET_ID"], split="train")
-
-    if CONFIG["USE_RERANKER"]:
-        reranker_engine = Reranker(
-            model_id=CONFIG["RERANKER_MODEL"],
-            device="cpu"
-        )
-    else:
-        reranker_engine = None
-
-    # if CONFIG["USE_AMANDA"]:
-    #     inference_engine = AMANDAPipeline(
-    #         llm,
-    #         retriever_engine,
-    #         reranker_engine=reranker_engine,
-    #         k=CONFIG["RAG_K"],
-    #         alpha=CONFIG["RAG_ALPHA"],
-    #         rerank_k=CONFIG["RERANK_K"],
-    #         device="cpu"
-    #     )
-    # else:
-    # Wrap LLM with RAG Pipeline
-    inference_engine = RAGPipeline(
-        llm,
-        retriever_engine,
-        reranker_engine=reranker_engine,
-        k=CONFIG["RAG_K"],
-        alpha=CONFIG["RAG_ALPHA"],
-        rerank_k=CONFIG["RERANK_K"],
-    )
-
-    inference_engine.build_index(train_dataset)
+if CONFIG["MODEL_CHOICE"] == "MEVF":
+    print(f"""\n🧠 Initializing Custom {CONFIG["TECH_TAG"]} Adapter...""")
+    # inference_engine = MEVFAdapter(
+    #     model_path=CONFIG["MEVF_WEIGHTS"],
+    #     maml_path=CONFIG["MAML_WEIGHTS"],
+    #     ae_path=CONFIG["AE_WEIGHTS"],
+    #     reasoning_model=CONFIG["REASONING_MODEL"]
+    # )
 else:
-    print(f"\n🛡️ Using Standard Pipeline ({tech_tag})...")
-    inference_engine = llm
+    # A. Prepare LLM Params
+    llm_params = {}
+    if "llava" in CONFIG["MODEL_CHOICE"].lower():
+        llm_params = {"repo_path": CONFIG["LLAVA_REPO_PATH"], "model_path": CONFIG["MODEL_CHOICE"]}
+    elif "qwen" in CONFIG["MODEL_CHOICE"].lower():
+        llm_params = {"model_id": CONFIG["MODEL_CHOICE"]}
+
+    # B. Load LLM Adapter
+    llm = get_llm_adapter(CONFIG["MODEL_CHOICE"], **llm_params)
+    llm.load()
+
+    # C. Configure Execution Pipeline
+    if CONFIG["USE_RAG"]:
+        print(f"""\n🔍 Initializing RAG Pipeline ({CONFIG["TECH_TAG"]})...""")
+        retriever_engine = MultimodalRetriever(device="cpu")
+
+        print("📂 Loading Knowledge Base (Train Split)...")
+        train_dataset = load_dataset(CONFIG["DATASET_ID"], split="train")
+
+        if CONFIG["RERANKER_MODEL"] is not None:
+            reranker_engine = Reranker(
+                model_id=CONFIG["RERANKER_MODEL"],
+                device="cpu"
+            )
+        else:
+            reranker_engine = None
+
+        # if CONFIG["USE_AMANDA"]:
+        #     inference_engine = AMANDAPipeline(
+        #         llm,
+        #         retriever_engine,
+        #         reranker_engine=reranker_engine,
+        #         k=CONFIG["RAG_K"],
+        #         alpha=CONFIG["RAG_ALPHA"],
+        #         rerank_k=CONFIG["RERANK_K"]
+        #     )
+        # else:
+        # Wrap LLM with RAG Pipeline
+        inference_engine = RAGPipeline(
+            llm,
+            retriever_engine,
+            reranker_engine=reranker_engine,
+            k=CONFIG["RAG_K"],
+            alpha=CONFIG["RAG_ALPHA"],
+            rerank_k=CONFIG["RERANK_K"]
+        )
+
+        inference_engine.build_index(train_dataset)
+    else:
+        print(f"""\n🛡️ Using Standard Pipeline ({CONFIG["TECH_TAG"]})...""")
+        inference_engine = llm
 
 
 # ==========================================
@@ -244,7 +176,7 @@ else:
 
 # Final Console Report
 print_final_report(
-    tech_tag=tech_tag,
+    tech_tag=CONFIG["TECH_TAG"],
     model_choice=CONFIG['MODEL_CHOICE'],
     closed_acc=closed_acc,
     bert_score=bert_score,
@@ -255,5 +187,5 @@ print_final_report(
 )
 
 # Save Files
-df.to_csv(OUTPUT_FILE, index=False)
-print(f"📄 Predictions saved: {OUTPUT_FILE}")
+df.to_csv(CONFIG["OUTPUT_FILE"], index=False)
+print(f"""📄 Predictions saved: {CONFIG["OUTPUT_FILE"]}""")
