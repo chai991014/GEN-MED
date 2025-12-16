@@ -99,8 +99,8 @@ def get_config():
     tags = []
     if CONFIG["USE_RAG"]:
         tags.append("RAG")
-    if CONFIG["RERANKER_MODEL"] is not None:
-        tags.append("Rerank")
+        if CONFIG["RERANKER_MODEL"] is not None:
+            tags.append("Rerank")
     if CONFIG["USE_REFLEXION"]:
         tags.append("Reflexion")
 

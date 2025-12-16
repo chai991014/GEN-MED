@@ -90,8 +90,8 @@ print("\n📂 Loading Test Dataset...")
 dataset = load_dataset(CONFIG["DATASET_ID"], split="test")
 
 if CONFIG["TEST_MODE"]:
-    dataset = dataset.select(range(5))
-    print("⚠️ WARNING: Running in Test Mode (5 samples only)")
+    dataset = dataset.select(range(20))
+    print("⚠️ WARNING: Running in Test Mode (20 samples only)")
 
 # Load Metrics
 bert_metric = evaluate.load("bertscore")
