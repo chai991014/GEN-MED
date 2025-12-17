@@ -6,7 +6,6 @@ from tqdm import tqdm
 from datasets import load_dataset
 from llm_adapter import get_llm_adapter
 from rag_pipeline import RAGPipeline
-# from amanda_pipeline import AMANDAPipeline
 from retriever import MultimodalRetriever
 from reranker import Reranker
 from mevf.adapter import MEVFAdapter
@@ -57,16 +56,6 @@ else:
         else:
             reranker_engine = None
 
-        # if CONFIG["USE_AMANDA"]:
-        #     inference_engine = AMANDAPipeline(
-        #         llm,
-        #         retriever_engine,
-        #         reranker_engine=reranker_engine,
-        #         k=CONFIG["RAG_K"],
-        #         alpha=CONFIG["RAG_ALPHA"],
-        #         rerank_k=CONFIG["RERANK_K"]
-        #     )
-        # else:
         # Wrap LLM with RAG Pipeline
         inference_engine = RAGPipeline(
             llm,
@@ -87,11 +76,11 @@ else:
 # 3. INFERENCE LOOP
 # ==========================================
 print("\n📂 Loading Test Dataset...")
-dataset = load_dataset(CONFIG["DATASET_ID"], split="test")
+dataset = load_dataset(CONFIG["DATASET_ID"], split=CONFIG["DATASET"])
 
 if CONFIG["TEST_MODE"]:
-    dataset = dataset.select(range(5))
-    print("⚠️ WARNING: Running in Test Mode (5 samples only)")
+    dataset = dataset.select(range(20))
+    print("⚠️ WARNING: Running in Test Mode (20 samples only)")
 
 # Load Metrics
 bert_metric = evaluate.load("bertscore")

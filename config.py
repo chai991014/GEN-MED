@@ -1,12 +1,12 @@
 CONFIG = {
     "OUTPUT_FILE": None,
     "DATASET_ID": "flaviagiammarino/vqa-rad",
+    "DATASET": "test",
 
     "TECH_TAG": None,
     "TEST_MODE": True,  # Run 5 samples only
     "USE_RAG": True,  # Toggle RAG
     "USE_REFLEXION": False,  # Toggle Reflexion Thinking
-    "USE_AMANDA": False,  # Toggle AMANDA Multi-Agent RAG Framework
 
     # ==========================================
     # MEVF Settings

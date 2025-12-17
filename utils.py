@@ -53,9 +53,7 @@ def print_system_config(config, tech_tag):
     if config.get('MODEL_CHOICE') == "MEVF":
         print(f"   • Reasoning Model : {config.get('REASONING_MODEL')}")
     else:
-        if tech_tag == "AMANDA":
-            print(f"\n   [ AMANDA - MultiAgent RAG System ]")
-        elif tech_tag != "ZeroShot":
+        if tech_tag != "ZeroShot":
             print(f"\n   [Technique]")
 
         if config.get("USE_RAG"):
@@ -99,8 +97,8 @@ def get_config():
     tags = []
     if CONFIG["USE_RAG"]:
         tags.append("RAG")
-    if CONFIG["RERANKER_MODEL"] is not None:
-        tags.append("Rerank")
+        if CONFIG["RERANKER_MODEL"] is not None:
+            tags.append("Rerank")
     if CONFIG["USE_REFLEXION"]:
         tags.append("Reflexion")
 
@@ -124,11 +122,6 @@ def get_config():
     output_dir = "./result"
     os.makedirs(output_dir, exist_ok=True)
 
-    if CONFIG["USE_AMANDA"]:
-        CONFIG["USE_RAG"] = True
-        CONFIG["USE_REFLEXION"] = False
-        tech_tag = "AMANDA"
-
     if CONFIG["TEST_MODE"]:
         base_name = f"Test5_{tech_tag}_{model_short}_{timestamp}"
     else:
@@ -138,7 +131,6 @@ def get_config():
         CONFIG["TEST_MODE"] = False
         CONFIG["USE_RAG"] = False
         CONFIG["USE_REFLEXION"] = False
-        CONFIG["USE_AMANDA"] = False
         tech_tag = f"""MEVF+{CONFIG["REASONING_MODEL"]}"""
         base_name = f"{tech_tag}_{timestamp}"
 
