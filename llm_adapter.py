@@ -2,6 +2,8 @@ import torch
 import sys
 from prompt_template import (
     get_inference_prompt,
+    get_instruct_inference_prompt,
+    get_cot_inference_prompt,
     get_judge_prompt,
     get_reflexion_critique_prompt,
     get_reflexion_critique_context,
@@ -37,7 +39,7 @@ class BaseVQAAdapter:
 class LLaVAAdapter(BaseVQAAdapter):
     """Adapter for LLaVA-Med models."""
 
-    def __init__(self, repo_path, model_path):
+    def __init__(self, repo_path, model_path, prompt):
         self.repo_path = repo_path
         self.model_path = model_path
         self.tokenizer = None
@@ -45,6 +47,7 @@ class LLaVAAdapter(BaseVQAAdapter):
         self.image_processor = None
         self.idx = None
         self.tok_img = None
+        self.prompt = prompt
 
     def load(self):
         print(f"🚀 Loading LLaVA-Med from {self.model_path}...")
@@ -91,7 +94,14 @@ class LLaVAAdapter(BaseVQAAdapter):
         return self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
     def generate(self, image, question, context=""):
-        text = get_inference_prompt(question, context)
+        if self.prompt == "Basic":
+            text = get_inference_prompt(question, context)
+        elif self.prompt == "Instruct":
+            text = get_instruct_inference_prompt(question, context)
+        elif self.prompt == "CoT":
+            text = get_cot_inference_prompt(question, context)
+        else:
+            text = question
         qs = self.tok_img + "\n" + text
         prompt = f"USER: {qs}\nASSISTANT:"
         return self._run_inference(image, prompt, max_tokens=128)
@@ -106,10 +116,11 @@ class LLaVAAdapter(BaseVQAAdapter):
 class QwenAdapter(BaseVQAAdapter):
     """Adapter for Qwen-VL models."""
 
-    def __init__(self, model_id):
+    def __init__(self, model_id, prompt):
         self.model_id = model_id
         self.model = None
         self.processor = None
+        self.prompt = prompt
 
     def load(self):
         print(f"🚀 Loading Qwen from {self.model_id}...")
@@ -155,7 +166,14 @@ class QwenAdapter(BaseVQAAdapter):
                                            clean_up_tokenization_spaces=False)[0].strip()
 
     def generate(self, image, question, context=""):
-        text = get_inference_prompt(question, context)
+        if self.prompt == "Basic":
+            text = get_inference_prompt(question, context)
+        elif self.prompt == "Instruct":
+            text = get_instruct_inference_prompt(question, context)
+        elif self.prompt == "CoT":
+            text = get_cot_inference_prompt(question, context)
+        else:
+            text = question
         return self._run_inference(image, text, max_tokens=128)
 
     def judge_answer(self, image, question, raw_answer):
@@ -169,11 +187,13 @@ def get_llm_adapter(model_choice, **kwargs):
     if "llava" in model_name:
         return LLaVAAdapter(
             repo_path=kwargs.get('repo_path'),
-            model_path=kwargs.get('model_path', model_choice)
+            model_path=kwargs.get('model_path', model_choice),
+            prompt=kwargs.get('prompt', "Basic")
         )
     elif "qwen" in model_name:
         return QwenAdapter(
-            model_id=kwargs.get('model_id', model_choice)
+            model_id=kwargs.get('model_id', model_choice),
+            prompt=kwargs.get('prompt', "Basic")
         )
     else:
         raise ValueError(f"Unknown Model Family for input: {model_choice}")

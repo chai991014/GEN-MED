@@ -35,9 +35,16 @@ else:
     # A. Prepare LLM Params
     llm_params = {}
     if "llava" in CONFIG["MODEL_CHOICE"].lower():
-        llm_params = {"repo_path": CONFIG["LLAVA_REPO_PATH"], "model_path": CONFIG["MODEL_CHOICE"]}
+        llm_params = {
+            "repo_path": CONFIG["LLAVA_REPO_PATH"],
+            "model_path": CONFIG["MODEL_CHOICE"],
+            "prompt": CONFIG["PROMPT"]
+        }
     elif "qwen" in CONFIG["MODEL_CHOICE"].lower():
-        llm_params = {"model_id": CONFIG["MODEL_CHOICE"]}
+        llm_params = {
+            "model_id": CONFIG["MODEL_CHOICE"],
+            "prompt": CONFIG["PROMPT"]
+        }
 
     # B. Load LLM Adapter
     llm = get_llm_adapter(CONFIG["MODEL_CHOICE"], **llm_params)
@@ -116,7 +123,7 @@ for i, item in tqdm(enumerate(dataset), total=len(dataset)):
             if normalized_raw not in ['yes', 'no']:
 
                 if judge_engine is not None:
-                    print("External Judge Evaluating Answer...")
+                    print(f"External Judge Evaluating Sample {i} Answer...")
                     final_pred = judge_engine.judge_answer(image, question, raw_pred)
                 else:
                     final_pred = inference_engine.judge_answer(image, question, raw_pred)

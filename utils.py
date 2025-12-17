@@ -53,16 +53,16 @@ def print_system_config(config, tech_tag):
     if config.get('MODEL_CHOICE') == "MEVF":
         print(f"   • Reasoning Model : {config.get('REASONING_MODEL')}")
     else:
-        if tech_tag != "ZeroShot":
-            print(f"\n   [Technique]")
+        print(f"\n   [Technique]")
+        print(f"   • Prompt Style    : {config.get('PROMPT')}")
+
+        if config.get("USE_REFLEXION"):
+            print(f"   • Reflexion       : Enabled")
 
         if config.get("USE_RAG"):
             print(f"   • RAG             : Enabled")
             print(f"     - Retrieval K   : {config.get('RAG_K')}")
             print(f"     - Alpha         : {config.get('RAG_ALPHA')}")
-
-        if config.get("USE_REFLEXION"):
-            print(f"   • Reflexion       : Enabled")
 
     print("=" * 60 + "\n")
 
@@ -98,11 +98,12 @@ def get_config():
         tags.append("RAG")
     if CONFIG["USE_REFLEXION"]:
         tags.append("Reflexion")
-
     if not tags:
-        tech_tag = "ZeroShot"
-    else:
-        tech_tag = "+".join(tags)
+        tags.append("ZeroShot")
+    if CONFIG["PROMPT"] is not None:
+        tags.append(CONFIG["PROMPT"])
+
+    tech_tag = "+".join(tags)
 
     model_map = {
         "microsoft/llava-med-v1.5-mistral-7b": "LLaVA-Med",

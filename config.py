@@ -19,7 +19,7 @@ CONFIG = {
     #  Groq Judge Settings
     # ==========================================
     "USE_GROQ_JUDGE": False,
-    "GROQ_API_KEY": "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",
+    "GROQ_API_KEY": "KEY",
     "GROQ_MODEL": "meta-llama/llama-4-scout-17b-16e-instruct",
 
     # ==========================================
@@ -31,9 +31,16 @@ CONFIG = {
     # "MODEL_CHOICE": "Qwen/Qwen2-VL-7B-Instruct",  # [OOM]
     # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-3B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-7B-Instruct",  # [OOM]
-    # "MODEL_CHOICE": "Qwen/Qwen3-VL-2B-Instruct",
-    "MODEL_CHOICE": "Qwen/Qwen3-VL-4B-Instruct",
+    "MODEL_CHOICE": "Qwen/Qwen3-VL-2B-Instruct",
+    # "MODEL_CHOICE": "Qwen/Qwen3-VL-4B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen3-VL-8B-Instruct",  # [OOM]
+
+    # ==========================================
+    # LLM Technique
+    # ==========================================
+    "PROMPT": "Basic",
+    # "PROMPT": "Instruct",
+    # "PROMPT": "CoT",
 
     "USE_REFLEXION": False,  # Toggle Reflexion Thinking
 
