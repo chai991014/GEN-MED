@@ -5,6 +5,7 @@ import pandas as pd
 import evaluate
 from datasets import load_dataset
 from llm_adapter import get_llm_adapter
+from llm_judge import GroqJudge
 from rag_pipeline import RAGPipeline
 from retriever import MultimodalRetriever
 from reranker import Reranker
@@ -20,6 +21,9 @@ CONFIG["LLAVA_REPO_PATH"] = os.path.abspath("./LLaVA-Med")
 # ==========================================
 # 2. PIPELINE INITIALIZATION
 # ==========================================
+inference_engine = None
+judge_engine = None
+
 if CONFIG["MODEL_CHOICE"] == "MEVF":
     print(f"""🧠 Initializing Custom {CONFIG["TECH_TAG"]} Adapter...""")
     inference_engine = MEVFAdapter(
@@ -38,6 +42,12 @@ else:
 
     # B. Load LLM Adapter
     llm = get_llm_adapter(CONFIG["MODEL_CHOICE"], **llm_params)
+
+    if CONFIG["USE_GROQ_JUDGE"]:
+        print("⚖️ Initializing External Groq Judge...")
+        api_key = CONFIG["GROQ_API_KEY"]
+        judge_engine = GroqJudge(api_key=api_key, model_id=CONFIG["GROQ_MODEL"])
+
     llm.load()
 
     # C. Configure Execution Pipeline
@@ -115,7 +125,12 @@ for i, item in tqdm(enumerate(dataset), total=len(dataset)):
         if is_closed:
             normalized_raw = normalize_text(raw_pred)
             if normalized_raw not in ['yes', 'no']:
-                final_pred = inference_engine.judge_answer(image, question, raw_pred)
+
+                if judge_engine is not None:
+                    print("External Judge Evaluating Answer...")
+                    final_pred = judge_engine.judge_answer(image, question, raw_pred)
+                else:
+                    final_pred = inference_engine.judge_answer(image, question, raw_pred)
 
         results.append({
             "id": i,

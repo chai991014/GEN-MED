@@ -9,16 +9,23 @@ CONFIG = {
     # ==========================================
     # MEVF Settings
     # ==========================================
-    "MODEL_CHOICE": "MEVF",
+    # "MODEL_CHOICE": "MEVF",
     "REASONING_MODEL": "SAN",
     "MEVF_WEIGHTS": "./mevf/SAN_best_model.pth",
     "MAML_WEIGHTS": "./mevf/pretrained_maml.weights",
     "AE_WEIGHTS": "./mevf/pretrained_ae.pth",
 
     # ==========================================
+    #  Groq Judge Settings
+    # ==========================================
+    "USE_GROQ_JUDGE": False,
+    "GROQ_API_KEY": "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",
+    "GROQ_MODEL": "meta-llama/llama-4-scout-17b-16e-instruct",
+
+    # ==========================================
     # LLM Model Selection
     # ==========================================
-    # "MODEL_CHOICE": "microsoft/llava-med-v1.5-mistral-7b",
+    "MODEL_CHOICE": "microsoft/llava-med-v1.5-mistral-7b",
     "LLAVA_REPO_PATH": "./LLaVA-Med",
     # "MODEL_CHOICE": "Qwen/Qwen2-VL-2B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen2-VL-7B-Instruct",  # [OOM]

@@ -20,7 +20,30 @@ def get_judge_prompt(question, raw_answer):
     return (
         f"Question: {question}\n"
         f"Answer: {raw_answer}\n"
-        "Does this answer mean Yes or No? Answer with one word."
+        "Task: Classify the Model Answer as 'Yes' or 'No'.\n"
+        "Constraint: Output ONLY the label 'Yes' or 'No'. Do not explain.\n\n"
+        "Verdict:"
+    )
+
+
+def get_api_judge_prompt(question, raw_answer):
+    """
+    External Judge / Evaluation Prompt.
+    Used by: llm_judge.judge
+    """
+    return (
+        f"""
+        Task: Classify the Medical AI Response into "YES" or "NO" relative to the question.
+
+        Question: {question}
+        Model Response: {raw_answer}
+
+        Rules:
+        1. If the response indicates a positive finding/agreement, output "YES".
+        2. If the response indicates a negative finding/absence/disagreement, output "NO".
+        3. If it's ambiguous or requires checking the image, output "VISION_REQUIRED".
+        4. Output ONLY the label.
+        """
     )
 
 
