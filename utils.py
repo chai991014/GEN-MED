@@ -61,13 +61,8 @@ def print_system_config(config, tech_tag):
             print(f"     - Retrieval K   : {config.get('RAG_K')}")
             print(f"     - Alpha         : {config.get('RAG_ALPHA')}")
 
-            if config.get("RERANKER_MODEL") is not None:
-                print(f"   • Reranker        : Enabled")
-                print(f"     - Reranker Model: {config.get('RERANKER_MODEL')}")
-                print(f"     - Rerank K      : {config.get('RERANK_K')}")
-
         if config.get("USE_REFLEXION"):
-            print(f"   • Reflexion       : {config.get('USE_REFLEXION')}")
+            print(f"   • Reflexion       : Enabled")
 
     print("=" * 60 + "\n")
 
@@ -101,8 +96,6 @@ def get_config():
     tags = []
     if CONFIG["USE_RAG"]:
         tags.append("RAG")
-        if CONFIG["RERANKER_MODEL"] is not None:
-            tags.append("Rerank")
     if CONFIG["USE_REFLEXION"]:
         tags.append("Reflexion")
 

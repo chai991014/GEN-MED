@@ -43,13 +43,4 @@ CONFIG = {
     "USE_RAG": False,  # Toggle RAG
     "RAG_K": 2,  # Number of exemplars to retrieve
     "RAG_ALPHA": 0.5,  # Alpha weight Text similarity and 1-Alpha weight Image similarity
-
-    # ==========================================
-    #  Reranker Settings
-    # ==========================================
-    # "RERANKER_MODEL": None,
-    # "RERANKER_MODEL": "BAAI/bge-reranker-base",
-    "RERANKER_MODEL": "ncbi/MedCPT-Cross-Encoder",
-    "RERANK_K": 20,  # Number of exemplars to retrieve for rerank
-    "RERANK_VISUAL_WEIGHT": 0.4  # How much to trust the original CLIP/Visual score.
 }

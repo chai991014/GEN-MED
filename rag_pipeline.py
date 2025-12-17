@@ -14,19 +14,13 @@ class RAGPipeline:
     def __init__(self,
                  llm_adapter,
                  retrieval_engine,
-                 reranker_engine=None,
                  k=2,
-                 alpha=0.5,
-                 rerank_k=20,
-                 visual_weight=0.4):
+                 alpha=0.5):
 
         self.llm = llm_adapter
         self.retriever = retrieval_engine
-        self.reranker = reranker_engine
         self.k = k
         self.alpha = alpha
-        self.rerank_k = rerank_k
-        self.visual_weight = visual_weight
 
     def load(self):
         """Ensures the underlying LLM is loaded."""
@@ -39,22 +33,13 @@ class RAGPipeline:
 
     def _retrieve_context(self, image, question):
         """Helper to retrieve and format context string."""
-        initial_k = self.rerank_k if self.reranker is not None else self.k
 
         retrieved_items = self.retriever.retrieve(
             query_text=question,
             query_image=image,
-            k=initial_k,
+            k=self.k,
             alpha=self.alpha
         )
-
-        if self.reranker is not None:
-            retrieved_items = self.reranker.rerank(
-                query=question,
-                candidates=retrieved_items,
-                top_k=self.k,
-                visual_weight=self.visual_weight
-            )
 
         if retrieved_items:
             return self.retriever.format_prompt(retrieved_items)

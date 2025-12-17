@@ -8,7 +8,6 @@ from llm_adapter import get_llm_adapter
 from llm_judge import GroqJudge
 from rag_pipeline import RAGPipeline
 from retriever import MultimodalRetriever
-from reranker import Reranker
 from mevf.adapter import MEVFAdapter
 from utils import get_config, normalize_text, print_final_report
 
@@ -58,23 +57,12 @@ else:
         print("📂 Loading Knowledge Base (Train Split)...")
         train_dataset = load_dataset(CONFIG["DATASET_ID"], split="train")
 
-        if CONFIG["RERANKER_MODEL"] is not None:
-            reranker_engine = Reranker(
-                model_id=CONFIG["RERANKER_MODEL"],
-                device="cpu"
-            )
-        else:
-            reranker_engine = None
-
         # Wrap LLM with RAG Pipeline
         inference_engine = RAGPipeline(
             llm,
             retriever_engine,
-            reranker_engine=reranker_engine,
             k=CONFIG["RAG_K"],
             alpha=CONFIG["RAG_ALPHA"],
-            rerank_k=CONFIG["RERANK_K"],
-            visual_weight=CONFIG["RERANK_VISUAL_WEIGHT"]
         )
 
         inference_engine.build_index(train_dataset)
