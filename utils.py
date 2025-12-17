@@ -72,17 +72,21 @@ def print_system_config(config, tech_tag):
     print("=" * 60 + "\n")
 
 
-def print_final_report(tech_tag, model_choice, closed_acc, bert_score, rouge_score, bleu_score, total_time, avg_time):
+def print_final_report(tech_tag, model_choice, closed_acc, closed_f1, bert_score, rouge_score, bleu_score, total_time, avg_time):
     """
     Prints the final performance metrics table.
     """
     print("\n" + "=" * 60)
-    print(f"✅ FINAL RESULTS: {tech_tag} - {model_choice}")
+    if model_choice == "MEVF":
+        print(f"✅ FINAL RESULTS: {tech_tag}")
+    else:
+        print(f"✅ FINAL RESULTS: {tech_tag} - {model_choice}")
     print("-" * 60)
     print(f"   [Closed-Ended]")
     print(f"   • Accuracy:           {closed_acc:.2f}%")
+    print(f"   • F1-Score:           {closed_f1:.2f}%")
     print(f"\n   [Open-Ended]")
-    print(f"   • BERTScore:          {bert_score:.2f}")
+    print(f"   • BioBERTScore:       {bert_score:.2f}")
     print(f"   • ROUGE-L:            {rouge_score:.2f}")
     print(f"   • BLEU-1:             {bleu_score:.2f}")
     print("-" * 60)

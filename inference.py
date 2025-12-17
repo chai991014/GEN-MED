@@ -1,8 +1,8 @@
-import pandas as pd
-import evaluate
 import os
 import time
 from tqdm import tqdm
+import pandas as pd
+import evaluate
 from datasets import load_dataset
 from llm_adapter import get_llm_adapter
 from rag_pipeline import RAGPipeline
@@ -83,6 +83,8 @@ if CONFIG["TEST_MODE"]:
     print("⚠️ WARNING: Running in Test Mode (20 samples only)")
 
 # Load Metrics
+accuracy_metric = evaluate.load("accuracy")
+f1_metric = evaluate.load("f1")
 bert_metric = evaluate.load("bertscore")
 rouge_metric = evaluate.load("rouge")
 bleu_metric = evaluate.load("bleu")
@@ -115,18 +117,13 @@ for i, item in tqdm(enumerate(dataset), total=len(dataset)):
             if normalized_raw not in ['yes', 'no']:
                 final_pred = inference_engine.judge_answer(image, question, raw_pred)
 
-        # 4. Score
-        clean_final = normalize_text(final_pred)
-        score = 1 if clean_final == clean_gt else 0
-
         results.append({
             "id": i,
             "question": question,
             "type": 'CLOSED' if is_closed else 'OPEN',
             "ground_truth": gt,
             "raw_prediction": raw_pred,
-            "final_prediction": final_pred,
-            "exact_match": score
+            "final_prediction": final_pred
         })
 
     except Exception as e:
@@ -143,8 +140,21 @@ avg_time = total_time / len(dataset) if len(dataset) > 0 else 0
 # ==========================================
 df = pd.DataFrame(results)
 
-# Accuracy
-closed_acc = df[df['type'] == 'CLOSED']['exact_match'].mean() * 100 if not df[df['type'] == 'CLOSED'].empty else 0.0
+# Accuracy & F1 for Closed Questions
+closed_df = df[df['type'] == 'CLOSED']
+if not closed_df.empty:
+    c_preds = [normalize_text(p) for p in closed_df['final_prediction']]
+    c_refs = [normalize_text(g) for g in closed_df['ground_truth']]
+    y_pred_int = [1 if x == 'yes' else 0 for x in c_preds]
+    y_true_int = [1 if x == 'yes' else 0 for x in c_refs]
+    acc_score = accuracy_metric.compute(predictions=y_pred_int, references=y_true_int)['accuracy']
+    f1_score_val = f1_metric.compute(predictions=y_pred_int, references=y_true_int, average='weighted')['f1']
+
+    closed_acc = acc_score * 100
+    closed_f1 = f1_score_val * 100
+else:
+    closed_acc = 0.0
+    closed_f1 = 0.0
 
 # NLP Metrics
 open_df = df[df['type'] == 'OPEN']
@@ -153,8 +163,13 @@ if not open_df.empty:
     preds = list(open_df['final_prediction'])
     refs = list(open_df['ground_truth'])
 
-    bert_f1 = bert_metric.compute(predictions=preds, references=refs, lang="en")['f1']
-    bert_score = sum(bert_f1) / len(bert_f1) * 100
+    bert_output = bert_metric.compute(
+        predictions=preds,
+        references=refs,
+        model_type="dmis-lab/biobert-base-cased-v1.2",
+        num_layers=9  # Optional: Recommended layer for BioBERT (often layer 9 performs best)
+    )
+    bert_score = sum(bert_output['f1']) / len(bert_output['f1']) * 100
 
     rouge_score = rouge_metric.compute(predictions=preds, references=refs)['rougeL'] * 100
 
@@ -168,6 +183,7 @@ print_final_report(
     tech_tag=CONFIG["TECH_TAG"],
     model_choice=CONFIG['MODEL_CHOICE'],
     closed_acc=closed_acc,
+    closed_f1=closed_f1,
     bert_score=bert_score,
     rouge_score=rouge_score,
     bleu_score=bleu_score,
