@@ -73,7 +73,8 @@ else:
             reranker_engine=reranker_engine,
             k=CONFIG["RAG_K"],
             alpha=CONFIG["RAG_ALPHA"],
-            rerank_k=CONFIG["RERANK_K"]
+            rerank_k=CONFIG["RERANK_K"],
+            visual_weight=CONFIG["RERANK_VISUAL_WEIGHT"]
         )
 
         inference_engine.build_index(train_dataset)

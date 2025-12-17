@@ -4,14 +4,14 @@ CONFIG = {
     "DATASET_ID": "flaviagiammarino/vqa-rad",
     "DATASET": "test",
 
-    "TEST_MODE": True,  # Run 5 samples only
+    "TEST_MODE": True,  # Run 20 samples only
 
     # ==========================================
     # MEVF Settings
     # ==========================================
     # "MODEL_CHOICE": "MEVF",
-    "REASONING_MODEL": "SAN",
-    "MEVF_WEIGHTS": "./mevf/SAN_best_model.pth",
+    "REASONING_MODEL": "BAN",
+    "MEVF_WEIGHTS": "./mevf/BAN_best_model.pth",
     "MAML_WEIGHTS": "./mevf/pretrained_maml.weights",
     "AE_WEIGHTS": "./mevf/pretrained_ae.pth",
 
@@ -25,14 +25,14 @@ CONFIG = {
     # ==========================================
     # LLM Model Selection
     # ==========================================
-    "MODEL_CHOICE": "microsoft/llava-med-v1.5-mistral-7b",
+    # "MODEL_CHOICE": "microsoft/llava-med-v1.5-mistral-7b",
     "LLAVA_REPO_PATH": "./LLaVA-Med",
     # "MODEL_CHOICE": "Qwen/Qwen2-VL-2B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen2-VL-7B-Instruct",  # [OOM]
     # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-3B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-7B-Instruct",  # [OOM]
     # "MODEL_CHOICE": "Qwen/Qwen3-VL-2B-Instruct",
-    # "MODEL_CHOICE": "Qwen/Qwen3-VL-4B-Instruct",
+    "MODEL_CHOICE": "Qwen/Qwen3-VL-4B-Instruct",
     # "MODEL_CHOICE": "Qwen/Qwen3-VL-8B-Instruct",  # [OOM]
 
     "USE_REFLEXION": False,  # Toggle Reflexion Thinking
@@ -47,8 +47,9 @@ CONFIG = {
     # ==========================================
     #  Reranker Settings
     # ==========================================
-    "RERANKER_MODEL": None,
+    # "RERANKER_MODEL": None,
     # "RERANKER_MODEL": "BAAI/bge-reranker-base",
-    # "RERANKER_MODEL": "ncbi/MedCPT-Cross-Encoder",
+    "RERANKER_MODEL": "ncbi/MedCPT-Cross-Encoder",
     "RERANK_K": 20,  # Number of exemplars to retrieve for rerank
+    "RERANK_VISUAL_WEIGHT": 0.4  # How much to trust the original CLIP/Visual score.
 }

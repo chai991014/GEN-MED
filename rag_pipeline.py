@@ -17,7 +17,8 @@ class RAGPipeline:
                  reranker_engine=None,
                  k=2,
                  alpha=0.5,
-                 rerank_k=20):
+                 rerank_k=20,
+                 visual_weight=0.4):
 
         self.llm = llm_adapter
         self.retriever = retrieval_engine
@@ -25,6 +26,7 @@ class RAGPipeline:
         self.k = k
         self.alpha = alpha
         self.rerank_k = rerank_k
+        self.visual_weight = visual_weight
 
     def load(self):
         """Ensures the underlying LLM is loaded."""
@@ -50,7 +52,8 @@ class RAGPipeline:
             retrieved_items = self.reranker.rerank(
                 query=question,
                 candidates=retrieved_items,
-                top_k=self.k
+                top_k=self.k,
+                visual_weight=self.visual_weight
             )
 
         if retrieved_items:
