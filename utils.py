@@ -48,9 +48,9 @@ def print_system_config(config, tech_tag):
     print(f"   [General]")
     print(f"   • Test Mode       : {config.get('TEST_MODE')}")
     print(f"   • Dataset         : {config.get('DATASET_ID')}")
-    print(f"   • Model           : {config.get('MODEL_CHOICE')}")
+    print(f"   • Model           : {config.get('MODEL_TYPE')}")
 
-    if config.get('MODEL_CHOICE') == "MEVF":
+    if config.get('MODEL_TYPE') == "MEVF":
         print(f"   • Reasoning Model : {config.get('REASONING_MODEL')}")
     else:
         print(f"\n   [Technique]")
@@ -65,30 +65,6 @@ def print_system_config(config, tech_tag):
             print(f"     - Alpha         : {config.get('RAG_ALPHA')}")
 
     print("=" * 60 + "\n")
-
-
-def print_final_report(tech_tag, model_choice, closed_acc, closed_f1, bert_score, rouge_score, bleu_score, total_time, avg_time):
-    """
-    Prints the final performance metrics table.
-    """
-    print("\n" + "=" * 60)
-    if model_choice == "MEVF":
-        print(f"✅ FINAL RESULTS: {tech_tag}")
-    else:
-        print(f"✅ FINAL RESULTS: {tech_tag} - {model_choice}")
-    print("-" * 60)
-    print(f"   [Closed-Ended]")
-    print(f"   • Accuracy:           {closed_acc:.2f}%")
-    print(f"   • F1-Score:           {closed_f1:.2f}%")
-    print(f"\n   [Open-Ended]")
-    print(f"   • BioBERTScore:       {bert_score:.2f}")
-    print(f"   • ROUGE-L:            {rouge_score:.2f}")
-    print(f"   • BLEU-1:             {bleu_score:.2f}")
-    print("-" * 60)
-    print(f"   [Performance]")
-    print(f"   • Total Time:         {total_time:.2f} sec")
-    print(f"   • Avg Time/Inference: {avg_time:.2f} sec")
-    print("=" * 60)
 
 
 def get_config():
@@ -107,15 +83,10 @@ def get_config():
 
     model_map = {
         "microsoft/llava-med-v1.5-mistral-7b": "LLaVA-Med",
-        "Qwen/Qwen2-VL-2B-Instruct": "Qwen2-2B",
-        "Qwen/Qwen2-VL-7B-Instruct": "Qwen2-7B",
-        "Qwen/Qwen2.5-VL-3B-Instruct": "Qwen2.5-3B",
-        "Qwen/Qwen2.5-VL-7B-Instruct": "Qwen2.5-7B",
         "Qwen/Qwen3-VL-2B-Instruct": "Qwen3-2B",
         "Qwen/Qwen3-VL-4B-Instruct": "Qwen3-4B",
-        "Qwen/Qwen3-VL-8B-Instruct": "Qwen3-8B",
     }
-    model_short = model_map.get(CONFIG["MODEL_CHOICE"], CONFIG["MODEL_CHOICE"].replace("/", "_"))
+    model_short = model_map.get(CONFIG["MODEL_TYPE"], CONFIG["MODEL_TYPE"].replace("/", "_"))
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = "./result"
     os.makedirs(output_dir, exist_ok=True)
@@ -125,7 +96,7 @@ def get_config():
     else:
         base_name = f"{tech_tag}_{model_short}_{timestamp}"
 
-    if CONFIG["MODEL_CHOICE"] == "MEVF":
+    if CONFIG["MODEL_TYPE"] == "MEVF":
         CONFIG["TEST_MODE"] = False
         CONFIG["USE_RAG"] = False
         CONFIG["USE_REFLEXION"] = False

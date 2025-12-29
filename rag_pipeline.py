@@ -79,7 +79,3 @@ class RAGPipeline:
 
         # We pass the RAG context again to ensure the final answer is grounded
         return self.llm.generate(image, refine_prompt, context=rag_context)
-
-    def judge_answer(self, image, question, raw_answer):
-        """Pass-through to the LLM (Judges don't use retrieval)."""
-        return self.llm.judge_answer(image, question, raw_answer)

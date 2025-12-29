@@ -3,8 +3,6 @@ import sys
 from prompt_template import (
     get_inference_prompt,
     get_instruct_inference_prompt,
-    get_cot_inference_prompt,
-    get_judge_prompt,
     get_reflexion_critique_prompt,
     get_reflexion_critique_context,
     get_reflexion_refine_prompt
@@ -16,7 +14,6 @@ class BaseVQAAdapter:
 
     def load(self): raise NotImplementedError
     def generate(self, image, question, context=""): raise NotImplementedError
-    def judge_answer(self, image, question, raw_answer): raise NotImplementedError
 
     def reflexion_generate(self, image, question):
         """
@@ -98,19 +95,11 @@ class LLaVAAdapter(BaseVQAAdapter):
             text = get_inference_prompt(question, context)
         elif self.prompt == "Instruct":
             text = get_instruct_inference_prompt(question, context)
-        elif self.prompt == "CoT":
-            text = get_cot_inference_prompt(question, context)
         else:
             text = question
         qs = self.tok_img + "\n" + text
         prompt = f"USER: {qs}\nASSISTANT:"
         return self._run_inference(image, prompt, max_tokens=128)
-
-    def judge_answer(self, image, question, raw_answer):
-        judge_q = get_judge_prompt(question, raw_answer)
-        qs = self.tok_img + "\n" + judge_q
-        prompt = f"USER: {qs}\nASSISTANT:"
-        return self._run_inference(image, prompt, max_tokens=5)
 
 
 class QwenAdapter(BaseVQAAdapter):
@@ -170,30 +159,24 @@ class QwenAdapter(BaseVQAAdapter):
             text = get_inference_prompt(question, context)
         elif self.prompt == "Instruct":
             text = get_instruct_inference_prompt(question, context)
-        elif self.prompt == "CoT":
-            text = get_cot_inference_prompt(question, context)
         else:
             text = question
         return self._run_inference(image, text, max_tokens=128)
 
-    def judge_answer(self, image, question, raw_answer):
-        judge_q = get_judge_prompt(question, raw_answer)
-        return self._run_inference(image, judge_q, max_tokens=5)
 
-
-def get_llm_adapter(model_choice, **kwargs):
+def get_llm_adapter(model_type, **kwargs):
     """Factory function to instantiate the correct model adapter."""
-    model_name = model_choice.lower()
+    model_name = model_type.lower()
     if "llava" in model_name:
         return LLaVAAdapter(
             repo_path=kwargs.get('repo_path'),
-            model_path=kwargs.get('model_path', model_choice),
+            model_path=kwargs.get('model_path', model_type),
             prompt=kwargs.get('prompt', "Basic")
         )
     elif "qwen" in model_name:
         return QwenAdapter(
-            model_id=kwargs.get('model_id', model_choice),
+            model_id=kwargs.get('model_id', model_type),
             prompt=kwargs.get('prompt', "Basic")
         )
     else:
-        raise ValueError(f"Unknown Model Family for input: {model_choice}")
+        raise ValueError(f"Unknown Model Family for input: {model_type}")

@@ -5,11 +5,10 @@ import pandas as pd
 import evaluate
 from datasets import load_dataset
 from llm_adapter import get_llm_adapter
-from llm_judge import GroqJudge
 from rag_pipeline import RAGPipeline
 from retriever import MultimodalRetriever
 from mevf.adapter import MEVFAdapter
-from utils import get_config, normalize_text, print_final_report
+from utils import get_config, normalize_text
 
 # ==========================================
 # 1. GET CONFIG
@@ -21,9 +20,8 @@ CONFIG["LLAVA_REPO_PATH"] = os.path.abspath("./LLaVA-Med")
 # 2. PIPELINE INITIALIZATION
 # ==========================================
 inference_engine = None
-judge_engine = None
 
-if CONFIG["MODEL_CHOICE"] == "MEVF":
+if CONFIG["MODEL_TYPE"] == "MEVF":
     print(f"""🧠 Initializing Custom {CONFIG["TECH_TAG"]} Adapter...""")
     inference_engine = MEVFAdapter(
         model_path=CONFIG["MEVF_WEIGHTS"],
@@ -34,26 +32,20 @@ if CONFIG["MODEL_CHOICE"] == "MEVF":
 else:
     # A. Prepare LLM Params
     llm_params = {}
-    if "llava" in CONFIG["MODEL_CHOICE"].lower():
+    if "llava" in CONFIG["MODEL_TYPE"].lower():
         llm_params = {
             "repo_path": CONFIG["LLAVA_REPO_PATH"],
-            "model_path": CONFIG["MODEL_CHOICE"],
+            "model_path": CONFIG["MODEL_TYPE"],
             "prompt": CONFIG["PROMPT"]
         }
-    elif "qwen" in CONFIG["MODEL_CHOICE"].lower():
+    elif "qwen" in CONFIG["MODEL_TYPE"].lower():
         llm_params = {
-            "model_id": CONFIG["MODEL_CHOICE"],
+            "model_id": CONFIG["MODEL_TYPE"],
             "prompt": CONFIG["PROMPT"]
         }
 
     # B. Load LLM Adapter
-    llm = get_llm_adapter(CONFIG["MODEL_CHOICE"], **llm_params)
-
-    if CONFIG["USE_GROQ_JUDGE"]:
-        print("⚖️ Initializing External Groq Judge...")
-        api_key = CONFIG["GROQ_API_KEY"]
-        judge_engine = GroqJudge(api_key=api_key, model_id=CONFIG["GROQ_MODEL"])
-
+    llm = get_llm_adapter(CONFIG["MODEL_TYPE"], **llm_params)
     llm.load()
 
     # C. Configure Execution Pipeline
@@ -115,26 +107,13 @@ for i, item in tqdm(enumerate(dataset), total=len(dataset)):
         # 2. Normalize & Categorize
         clean_gt = normalize_text(gt)
         is_closed = clean_gt in ['yes', 'no']
-        final_pred = raw_pred
-
-        # 3. Apply Judge if needed (Closed-Ended Only)
-        if is_closed:
-            normalized_raw = normalize_text(raw_pred)
-            if normalized_raw not in ['yes', 'no']:
-
-                if judge_engine is not None:
-                    print(f"External Judge Evaluating Sample {i} Answer...")
-                    final_pred = judge_engine.judge_answer(image, question, raw_pred)
-                else:
-                    final_pred = inference_engine.judge_answer(image, question, raw_pred)
 
         results.append({
             "id": i,
             "question": question,
             "type": 'CLOSED' if is_closed else 'OPEN',
             "ground_truth": gt,
-            "raw_prediction": raw_pred,
-            "final_prediction": final_pred
+            "raw_prediction": raw_pred
         })
 
     except Exception as e:
@@ -147,60 +126,15 @@ avg_time = total_time / len(dataset) if len(dataset) > 0 else 0
 
 
 # ==========================================
-# 4. METRICS & REPORTS
+# 4. SUMMARY
 # ==========================================
 df = pd.DataFrame(results)
 
-# Accuracy & F1 for Closed Questions
-closed_df = df[df['type'] == 'CLOSED']
-if not closed_df.empty:
-    c_preds = [normalize_text(p) for p in closed_df['final_prediction']]
-    c_refs = [normalize_text(g) for g in closed_df['ground_truth']]
-    y_pred_int = [1 if x == 'yes' else 0 for x in c_preds]
-    y_true_int = [1 if x == 'yes' else 0 for x in c_refs]
-    acc_score = accuracy_metric.compute(predictions=y_pred_int, references=y_true_int)['accuracy']
-    f1_score_val = f1_metric.compute(predictions=y_pred_int, references=y_true_int, average='weighted')['f1']
-
-    closed_acc = acc_score * 100
-    closed_f1 = f1_score_val * 100
-else:
-    closed_acc = 0.0
-    closed_f1 = 0.0
-
-# NLP Metrics
-open_df = df[df['type'] == 'OPEN']
-if not open_df.empty:
-    print("📊 Computing NLP Metrics...")
-    preds = list(open_df['final_prediction'])
-    refs = list(open_df['ground_truth'])
-
-    bert_output = bert_metric.compute(
-        predictions=preds,
-        references=refs,
-        model_type="dmis-lab/biobert-base-cased-v1.2",
-        num_layers=9  # Optional: Recommended layer for BioBERT (often layer 9 performs best)
-    )
-    bert_score = sum(bert_output['f1']) / len(bert_output['f1']) * 100
-
-    rouge_score = rouge_metric.compute(predictions=preds, references=refs)['rougeL'] * 100
-
-    bleu_output = bleu_metric.compute(predictions=preds, references=[[r] for r in refs])
-    bleu_score = bleu_output['precisions'][0] * 100
-else:
-    bert_score = rouge_score = bleu_score = 0.0
-
-# Final Console Report
-print_final_report(
-    tech_tag=CONFIG["TECH_TAG"],
-    model_choice=CONFIG['MODEL_CHOICE'],
-    closed_acc=closed_acc,
-    closed_f1=closed_f1,
-    bert_score=bert_score,
-    rouge_score=rouge_score,
-    bleu_score=bleu_score,
-    total_time=total_time,
-    avg_time=avg_time
-)
+print("\n" + "=" * 60)
+print(f"   [Performance]")
+print(f"   • Total Time:         {total_time:.2f} sec")
+print(f"   • Avg Time/Inference: {avg_time:.2f} sec")
+print("=" * 60)
 
 # Save Files
 df.to_csv(CONFIG["OUTPUT_FILE"], index=False)

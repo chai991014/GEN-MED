@@ -9,38 +9,25 @@ CONFIG = {
     # ==========================================
     # MEVF Settings
     # ==========================================
-    # "MODEL_CHOICE": "MEVF",
+    "MODEL_TYPE": "MEVF",
     "REASONING_MODEL": "BAN",
     "MEVF_WEIGHTS": "./mevf/BAN_best_model.pth",
     "MAML_WEIGHTS": "./mevf/pretrained_maml.weights",
     "AE_WEIGHTS": "./mevf/pretrained_ae.pth",
 
     # ==========================================
-    #  Groq Judge Settings
-    # ==========================================
-    "USE_GROQ_JUDGE": False,
-    "GROQ_API_KEY": "KEY",
-    "GROQ_MODEL": "meta-llama/llama-4-scout-17b-16e-instruct",
-
-    # ==========================================
     # LLM Model Selection
     # ==========================================
-    # "MODEL_CHOICE": "microsoft/llava-med-v1.5-mistral-7b",
     "LLAVA_REPO_PATH": "./LLaVA-Med",
-    # "MODEL_CHOICE": "Qwen/Qwen2-VL-2B-Instruct",
-    # "MODEL_CHOICE": "Qwen/Qwen2-VL-7B-Instruct",  # [OOM]
-    # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-3B-Instruct",
-    # "MODEL_CHOICE": "Qwen/Qwen2.5-VL-7B-Instruct",  # [OOM]
-    "MODEL_CHOICE": "Qwen/Qwen3-VL-2B-Instruct",
-    # "MODEL_CHOICE": "Qwen/Qwen3-VL-4B-Instruct",
-    # "MODEL_CHOICE": "Qwen/Qwen3-VL-8B-Instruct",  # [OOM]
+    # "MODEL_TYPE": "microsoft/llava-med-v1.5-mistral-7b",
+    # "MODEL_TYPE": "Qwen/Qwen3-VL-2B-Instruct",
+    # "MODEL_TYPE": "Qwen/Qwen3-VL-4B-Instruct",
 
     # ==========================================
     # LLM Technique
     # ==========================================
     "PROMPT": "Basic",
     # "PROMPT": "Instruct",
-    # "PROMPT": "CoT",
 
     "USE_REFLEXION": False,  # Toggle Reflexion Thinking
 
@@ -48,6 +35,6 @@ CONFIG = {
     #  RAG Settings
     # ==========================================
     "USE_RAG": False,  # Toggle RAG
-    "RAG_K": 2,  # Number of exemplars to retrieve
+    "RAG_K": 3,  # Number of exemplars to retrieve
     "RAG_ALPHA": 0.5,  # Alpha weight Text similarity and 1-Alpha weight Image similarity
 }
