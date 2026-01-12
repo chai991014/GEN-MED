@@ -4,3 +4,4 @@ LLaVA-Med/
 result/
 rag_cache/
 mevf/model/
+/finetune

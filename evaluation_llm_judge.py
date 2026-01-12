@@ -1,6 +1,7 @@
 import pandas as pd
 import os
 import time
+from datetime import datetime
 import glob
 from tqdm import tqdm
 from sklearn.metrics import f1_score
@@ -10,13 +11,14 @@ from openai import OpenAI
 import evaluate  # pip install evaluate bert-score
 import re
 import string
+import json
 
 # ==========================================
 # 1. KEYS & CLIENT INITIALIZATION
 # ==========================================
 KEYS = {
     "GOOGLE": "AIzaSyBfGm6wPQb-ztNZA_heS8-bPumDfQtHObY",
-    "GROQ": "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",
+    "GROQ": "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",
     "DEEPSEEK": "sk-f32f1f1b98bd4603a48c6c98ae451908"
 }
 
@@ -65,6 +67,32 @@ def extract_binary_verdict(text):
 
     # 3. Default to 0 if completely ambiguous
     return 0
+
+
+def parse_json_verdicts(text, expected_keys):
+    """Fuzzy matches LLM keys back to original engine names to fix Llama/JSON bugs."""
+    if not isinstance(text, str) or not text.strip():
+        return {k: 0 for k in expected_keys}
+    try:
+        # Extract JSON block
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if not match: return {k: 0 for k in expected_keys}
+        data = json.loads(match.group())
+
+        aligned = {}
+        for original in expected_keys:
+            # Match logic: remove 'pred_', symbols, and lowercase everything
+            norm_orig = original.lower().replace("pred_", "").replace("+", "").replace("_", "").replace("-", "")
+            val = 0
+            for k_llm, v_llm in data.items():
+                norm_llm = str(k_llm).lower().replace("pred_", "").replace("+", "").replace("_", "").replace("-", "")
+                if norm_llm == norm_orig or norm_llm in norm_orig or norm_orig in norm_llm:
+                    val = v_llm
+                    break
+            aligned[original] = val
+        return aligned
+    except:
+        return {k: 0 for k in expected_keys}
 
 
 class EnsembleEngine:
@@ -138,79 +166,134 @@ class EnsembleEngine:
 
         return results
 
+    def get_batch_prompt(self, q, gt, preds_dict, q_type):
+
+        if q_type == "CLOSED":
+            task_desc = "For this Yes/No question, do these model responses signify the same answer as the ground truth?"
+        else:
+            task_desc = "For these medical descriptions, is the core clinical finding in the model response the same as the ground truth?"
+
+        preds_list = "\n".join([f"- {k}: {v}" for k, v in preds_dict.items()])
+
+        return (
+            f"System: You are a medical evaluation expert.\n"
+            f"Question: {q}\n"
+            f"Ground Truth: {gt}\n\n"
+            f"Evaluate these model responses:\n{preds_list}\n\n"
+            f"Task: {task_desc}\n"
+            f"Constraint: Respond ONLY with a JSON object where keys are the engine names and values are 1 (Correct) or 0 (Incorrect)."
+        )
+
+    def judge_batch(self, q, gt, preds_dict, q_type):
+        prompt = self.get_batch_prompt(q, gt, preds_dict, q_type)
+        raw_responses = {'Gemini_Raw': "", 'Llama_Raw': "", 'Deepseek_Raw': ""}
+        final_verdicts = {name: {'Gemini': 0, 'Llama': 0, 'Deepseek': 0} for name in preds_dict.keys()}
+
+        # 1. Gemini Judge
+        try:
+            res = self.gemini.generate_content(prompt).text
+            raw_responses['Gemini_Raw'] = res
+            v = parse_json_verdicts(res, preds_dict.keys())
+            for k in preds_dict.keys():
+                final_verdicts[k]['Gemini'] = v.get(k, 0)
+        except Exception as e:
+            print(f"Gemini Err: {e}")
+
+        # 2. Llama Judge
+        try:
+            res = self.groq.chat.completions.create(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0
+            ).choices[0].message.content
+            raw_responses['Llama_Raw'] = res
+            v = parse_json_verdicts(res, preds_dict.keys())
+            for k in preds_dict.keys():
+                final_verdicts[k]['Llama'] = v.get(k, 0)
+        except Exception as e:
+            print(f"Llama Err: {e}")
+
+        # 3. DeepSeek Judge
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                res = self.deepseek_client.chat.completions.create(
+                    model="deepseek-reasoner",
+                    messages=[{"role": "user", "content": prompt}]
+                ).choices[0].message.content
+                raw_responses['Deepseek_Raw'] = res
+                content_after_think = res.split("</think>")[-1]
+                v = parse_json_verdicts(content_after_think, preds_dict.keys())
+                for k in preds_dict.keys():
+                    final_verdicts[k]['Deepseek'] = v.get(k, 0)
+                break
+            except Exception as e:
+                print(f"DeepSeek Connection attempt {attempt + 1} failed: {e}")
+                time.sleep(5)  # Wait 5 seconds before retrying
+                if attempt == max_retries - 1:
+                    raw_responses['Deepseek_Raw'] = ""  # Fail gracefully
+
+        return final_verdicts, raw_responses
+
 
 # ==========================================
 # 2. PROCESSING PIPELINE
 # ==========================================
-def run_pipeline():
+def run_batch_pipeline():
     engine = EnsembleEngine()
-    files = glob.glob("./raw_pre_result/results_*.csv")
-    summary_data = []
+    input_files = glob.glob("./result/result-agent/results_*.csv")
+    output_dir = "./result/processed-agent/"
+    os.makedirs(output_dir, exist_ok=True)
 
-    for f_path in files:
-        if "processed_results_" in f_path:
-            continue
-        df = pd.read_csv(f_path)
+    # --- STEP 1: MERGE ALL FILES ---
+    merged_df = None
+    for f in input_files:
+        name = os.path.basename(f).replace("results_", "").replace(".csv", "")
+        df = pd.read_csv(f)
 
-        # UI Requirement: Delete original final_prediction
-        if "final_prediction" in df.columns:
-            df = df.drop(columns=["final_prediction"])
+        cols_to_drop = ['reflexion_draft', 'reflexion_critique', 'retrieved_ids', 'retrieved_scores']
+        df = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors='ignore')
 
-        data = {k: [] for k in ['Gemini_Raw', 'Gemini', 'Llama_Raw', 'Llama', 'Deepseek_Raw', 'Deepseek', 'final_prediction']}
+        df = df.rename(columns={'raw_prediction': f'pred_{name}'})
+        if merged_df is None:
+            merged_df = df
+        else:
+            merged_df = pd.merge(merged_df, df[['id', f'pred_{name}']], on='id', how='outer')
 
-        for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Evaluating {os.path.basename(f_path)}"):
-            res = engine.judge_all(row['question'], row['ground_truth'], row['raw_prediction'], row['type'])
+    # --- STEP 2: BATCH EVALUATION ---
+    pred_cols = [c for c in merged_df.columns if c.startswith('pred_') and not any(x in c for x in ['_Gemini', '_Llama', '_Deepseek', '_final'])]
 
-            for k in ['Gemini_Raw', 'Gemini', 'Llama_Raw', 'Llama', 'Deepseek_Raw', 'Deepseek']:
-                data[k].append(res[k])
+    # Pre-allocate columns to avoid fragmentation
+    for c in pred_cols:
+        for suffix in ['_Gemini', '_Llama', '_Deepseek', '_final_prediction']:
+            if f"{c}{suffix}" not in merged_df.columns:
+                merged_df[f"{c}{suffix}"] = None
+    for raw_col in ['Gemini_Raw', 'Llama_Raw', 'Deepseek_Raw']:
+        if raw_col not in merged_df.columns:
+            merged_df[raw_col] = None
 
-            # Majority Logic (Ignoring None)
-            majority = 1 if (res['Gemini'] + res['Llama'] + res['Deepseek']) >= 2 else 0
-            data['final_prediction'].append(majority)
-            time.sleep(3)
+    for idx, row in tqdm(merged_df.iterrows(), total=len(merged_df), desc="Evaluating Batch"):
+        preds_dict = {c: row[c] for c in pred_cols}
+        batch_verdicts, batch_raw = engine.judge_batch(row['question'], row['ground_truth'], preds_dict, row['type'])
 
-        for k, v in data.items():
-            df[k] = v
+        merged_df.at[idx, 'Gemini_Raw'] = batch_raw['Gemini_Raw']
+        merged_df.at[idx, 'Llama_Raw'] = batch_raw['Llama_Raw']
+        merged_df.at[idx, 'Deepseek_Raw'] = batch_raw['Deepseek_Raw']
 
-        # --- CALCULATE SUMMARY METRICS ---
-        closed_df = df[df['type'] == 'CLOSED']
-        open_df = df[df['type'] == 'OPEN']
+        for c in pred_cols:
+            scores = batch_verdicts[c]
+            merged_df.at[idx, f"{c}_Gemini"] = scores['Gemini']
+            merged_df.at[idx, f"{c}_Llama"] = scores['Llama']
+            merged_df.at[idx, f"{c}_Deepseek"] = scores['Deepseek']
 
-        # F1 Calculation for CLOSED
-        gt_binary = closed_df['ground_truth'].str.lower().map({'yes': 1, 'no': 0}).fillna(0)
-        f1_closed = f1_score(gt_binary, closed_df['final_prediction']) if not closed_df.empty else 0
+            majority = 1 if (scores['Gemini'] + scores['Llama'] + scores['Deepseek']) >= 2 else 0
+            merged_df.at[idx, f"{c}_final_prediction"] = majority
 
-        # BioBERTScore for OPEN
-        bio_score = 0
-        if not open_df.empty:
-            b_res = bert_metric.compute(
-                predictions=open_df['raw_prediction'].astype(str).tolist(),
-                references=open_df['ground_truth'].astype(str).tolist(),
-                model_type=BIOBERT_MODEL,
-                num_layers=9
-            )
-            bio_score = sum(b_res['f1']) / len(b_res['f1']) * 100
+        merged_df.to_csv(os.path.join(output_dir, "batch_processed_results_checkpoint.csv"), index=False)
 
-        summary_data.append({
-            "File": os.path.basename(f_path),
-            "Closed_Acc_Gemini": closed_df['Gemini'].mean() * 100,
-            "Closed_Acc_Llama": closed_df['Llama'].mean() * 100,
-            "Closed_Acc_Deepseek": closed_df['Deepseek'].mean() * 100,
-            "Closed_Avg_Acc": closed_df[['Gemini', 'Llama', 'Deepseek']].mean(axis=1).mean() * 100,
-            "Closed_F1_Majority": f1_closed * 100,
-            "Open_Acc_Gemini": open_df['Gemini'].mean() * 100,
-            "Open_Acc_Llama": open_df['Llama'].mean() * 100,
-            "Open_Acc_Deepseek": open_df['Deepseek'].mean() * 100,
-            "Open_Avg_Acc": open_df[['Gemini', 'Llama', 'Deepseek']].mean(axis=1).mean() * 100,
-            "Open_BioBERT": bio_score
-        })
-
-        # Save Processed Result File
-        df.to_csv(f"processed_results_{os.path.basename(f_path)}", index=False)
-
-    # Save Master Summary
-    pd.DataFrame(summary_data).to_csv("processed_results_summary.csv", index=False)
-    print("\n✅ All files processed. Check processed_results_summary.csv")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    final_results_path = os.path.join(output_dir, f"batch_processed_results_{timestamp}.csv")
+    merged_df.to_csv(final_results_path, index=False)
 
 
 def run_mevf_pipeline():
@@ -307,5 +390,79 @@ def run_mevf_pipeline():
     print("\n✅ All files processed. Check processed_results_summary.csv")
 
 
+def run_recovery():
+    INPUT_FILE = "./result/processed-agent/batch_processed_results_20260110_062157.csv"
+    OUTPUT_DIR = "./result/processed-agent/"
+
+    df = pd.read_csv(INPUT_FILE)
+
+    pred_cols = [c for c in df.columns if
+                 c.startswith('pred_') and not any(x in c for x in ['_Gemini', '_Llama', '_Deepseek', '_final'])]
+
+    print(f"Repairing {len(df)} rows for engines: {pred_cols}")
+
+    # 1. RE-PARSE RAW DATA
+    for idx, row in df.iterrows():
+        # Parse each judge separately
+        g_verdicts = parse_json_verdicts(row['Gemini_Raw'], pred_cols)
+        l_verdicts = parse_json_verdicts(row['Llama_Raw'], pred_cols)
+        d_verdicts = parse_json_verdicts(row['Deepseek_Raw'], pred_cols)
+
+        for c in pred_cols:
+            g, l, d = g_verdicts.get(c, 0), l_verdicts.get(c, 0), d_verdicts.get(c, 0)
+            df.at[idx, f"{c}_Gemini"] = g
+            df.at[idx, f"{c}_Llama"] = l
+            df.at[idx, f"{c}_Deepseek"] = d
+            # Recalculate Majority
+            df.at[idx, f"{c}_final_prediction"] = 1 if (g + l + d) >= 2 else 0
+
+    # 2. RE-CALCULATE SUMMARY (Using same logic as previous)
+    summary_data = []
+    for c in pred_cols:
+        engine_name = c.replace("pred_", "")
+        closed_df = df[df['type'] == 'CLOSED']
+        open_df = df[df['type'] == 'OPEN']
+
+        # F1 Score
+        gt_binary = closed_df['ground_truth'].str.lower().map({'yes': 1, 'no': 0}).fillna(0)
+        f1_closed = f1_score(gt_binary, closed_df[f"{c}_final_prediction"].astype(int)) if not closed_df.empty else 0
+
+        # BioBERTScore
+        bio_score = 0
+        if not open_df.empty:
+            b_res = bert_metric.compute(
+                predictions=open_df[c].astype(str).tolist(),
+                references=open_df['ground_truth'].astype(str).tolist(),
+                model_type=BIOBERT_MODEL, num_layers=9
+            )
+            bio_score = sum(b_res['f1']) / len(b_res['f1']) * 100
+
+        summary_data.append({
+            "File": f"results_{engine_name}.csv",
+            "Closed_Acc_Gemini": closed_df[f"{c}_Gemini"].mean() * 100,
+            "Closed_Acc_Llama": closed_df[f"{c}_Llama"].mean() * 100,
+            "Closed_Acc_Deepseek": closed_df[f"{c}_Deepseek"].mean() * 100,
+            "Closed_Avg_Acc": closed_df[[f"{c}_Gemini", f"{c}_Llama", f"{c}_Deepseek"]].mean(axis=1).mean() * 100,
+            "Closed_F1_Majority": f1_closed * 100,
+            "Open_Acc_Gemini": open_df[f"{c}_Gemini"].mean() * 100,
+            "Open_Acc_Llama": open_df[f"{c}_Llama"].mean() * 100,
+            "Open_Acc_Deepseek": open_df[f"{c}_Deepseek"].mean() * 100,
+            "Open_Avg_Acc": open_df[[f"{c}_Gemini", f"{c}_Llama", f"{c}_Deepseek"]].mean(axis=1).mean() * 100,
+            "Open_BioBERT": bio_score
+        })
+
+    # 3. SAVE
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    final_results_path = os.path.join(OUTPUT_DIR, f"batch_processed_results_{timestamp}.csv")
+    df.to_csv(final_results_path, index=False)
+
+    pd.DataFrame(summary_data).to_csv(os.path.join(OUTPUT_DIR, f"processed_results_summary_{timestamp}.csv"),
+                                      index=False)
+    print("Done. Check result/processed/ directory.")
+
+
 if __name__ == "__main__":
-    run_mevf_pipeline()
+    # run_batch_pipeline()
+    run_recovery()
