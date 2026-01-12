@@ -41,30 +41,40 @@ class RAGPipeline:
             alpha=self.alpha
         )
 
+        context = ""
+        retrieved_ids = []
+        retrieved_scores = []
+
         if retrieved_items:
-            return self.retriever.format_prompt(retrieved_items)
-        return ""
+            context = self.retriever.format_prompt(retrieved_items)
+            retrieved_ids = [item.get('idx') for item in retrieved_items]
+            retrieved_scores = [round(item.get('score', 0), 4) for item in retrieved_items]
+        return context, retrieved_ids, retrieved_scores
 
     def generate(self, image, question, context=""):
         """
         Executes the RAG flow: Retrieve -> Contextualize -> Generate.
         """
+        retrieved_ids, retrieved_scores = [], []
         # If external context isn't provided, use RAG to find it
         if not context:
-            context = self._retrieve_context(image, question)
-
+            context, retrieved_ids, retrieved_scores = self._retrieve_context(image, question)
         # Pass to the underlying llm adapter
-        return self.llm.generate(image, question, context=context)
+        result = self.llm.generate(image, question, context=context)
+        result["retrieved_ids"] = retrieved_ids
+        result["retrieved_scores"] = retrieved_scores
+        return result
 
     def reflexion_generate(self, image, question):
         """
         Implements Reflexion (Draft -> Critique -> Refine) WITH RAG Context.
         """
         # Retrieve Context ONCE
-        rag_context = self._retrieve_context(image, question)
+        rag_context, retrieved_ids, retrieved_scores = self._retrieve_context(image, question)
 
         # Draft (Fast Thinking + RAG)
-        draft_answer = self.llm.generate(image, question, context=rag_context)
+        draft_dict = self.llm.generate(image, question, context=rag_context)
+        draft_answer = draft_dict["prediction"]
 
         # Critique (Self-Correction)
         critique_prompt = get_reflexion_critique_prompt(draft_answer)
@@ -72,10 +82,18 @@ class RAGPipeline:
         # The critique context helps maintain conversation history
         critique_context = get_reflexion_critique_context(question, rag_context)
 
-        critique_response = self.llm.generate(image, critique_prompt, context=critique_context)
+        critique_dict = self.llm.generate(image, critique_prompt, context=critique_context)
+        critique_response = critique_dict["prediction"]
 
         # Refine (Final Answer + RAG)
         refine_prompt = get_reflexion_refine_prompt(question, draft_answer, critique_response)
+        final_dict = self.llm.generate(image, refine_prompt, context=rag_context)
 
         # We pass the RAG context again to ensure the final answer is grounded
-        return self.llm.generate(image, refine_prompt, context=rag_context)
+        return {
+            "prediction": final_dict["prediction"],
+            "reflexion_draft": draft_answer,
+            "reflexion_critique": critique_response,
+            "retrieved_ids": retrieved_ids,
+            "retrieved_scores": retrieved_scores
+        }

@@ -180,6 +180,7 @@ class MultimodalRetriever:
         for idx, score in top_k:
             item = self.knowledge_base[int(idx)]
             results.append({
+                "idx": item.get('idx', int(idx)),
                 "question": item['question'],
                 "answer": str(item['answer']),
                 "score": float(score)
