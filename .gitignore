@@ -5,3 +5,4 @@ result/
 rag_cache/
 mevf/model/
 /finetune
+/slake_vqa_rad_format

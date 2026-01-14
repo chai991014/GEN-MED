@@ -158,21 +158,13 @@ class QwenAdapter(BaseVQAAdapter):
             bnb_4bit_compute_dtype=torch.float16
         )
 
-        if "Qwen3" in self.model_id:
-            from transformers import Qwen3VLForConditionalGeneration
-            self.model = Qwen3VLForConditionalGeneration.from_pretrained(
-                self.model_id, quantization_config=bnb_config, device_map="auto"
-            )
-        elif "Qwen2.5" in self.model_id:
-            from transformers import Qwen2_5_VLForConditionalGeneration
-            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                self.model_id, quantization_config=bnb_config, device_map="auto"
-            )
-        else:
-            from transformers import Qwen2VLForConditionalGeneration
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
-                self.model_id, quantization_config=bnb_config, device_map="auto"
-            )
+        from transformers import Qwen3VLForConditionalGeneration
+        self.model = Qwen3VLForConditionalGeneration.from_pretrained(
+            self.model_id,
+            quantization_config=bnb_config,
+            device_map="auto",
+            attn_implementation="eager"
+        )
 
         if self.adapter_path:
             print(f"🔗 Attaching LoRA Adapter from {self.adapter_path}...")
