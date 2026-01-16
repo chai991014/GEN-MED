@@ -7,6 +7,7 @@ from torch.nn.utils.weight_norm import weight_norm
 from datasets import load_dataset
 import numpy as np
 import pickle
+import random
 import time
 from datetime import datetime
 from utils import setup_logger
@@ -98,8 +99,8 @@ class BCNet(nn.Module):
         self.h_dim = h_dim
         self.h_out = h_out
 
-        self.v_net = nn.Linear(v_dim, h_dim * k, bias=False)
-        self.q_net = nn.Linear(q_dim, h_dim * k, bias=False)
+        self.v_net = weight_norm(nn.Linear(v_dim, h_dim * k, bias=False), dim=None)
+        self.q_net = weight_norm(nn.Linear(q_dim, h_dim * k, bias=False), dim=None)
         self.dropout = nn.Dropout(dropout[1])
 
         if 1 < k:
@@ -150,11 +151,11 @@ class BiAttention(nn.Module):
         # No weight_norm wrapper here (BCNet has it internally)
         self.logits = BCNet(x_dim, y_dim, z_dim, glimpse, dropout=dropout, k=3)
 
-    def forward(self, v, q, v_mask=True):
-        p, logits = self.forward_all(v, q, v_mask)
+    def forward(self, v, q, v_mask=True, q_mask=None):
+        p, logits = self.forward_all(v, q, v_mask, q_mask)
         return p, logits
 
-    def forward_all(self, v, q, v_mask=True):
+    def forward_all(self, v, q, v_mask=True, q_mask=None):
         v_num = v.size(1)
         q_num = q.size(1)
 
@@ -167,6 +168,11 @@ class BiAttention(nn.Module):
         if v_mask:
             mask = (0 == v.abs().sum(2)).unsqueeze(1).unsqueeze(3).expand(logits.size())
             logits.data.masked_fill_(mask.data, -float('inf'))
+
+        if q_mask is not None:
+            # q_mask is [B, L]. Expand to [B, Glimpse, N, L]
+            q_mask_ex = q_mask.unsqueeze(1).unsqueeze(2).expand(logits.size())
+            logits.data.masked_fill_(q_mask_ex, -float('inf'))
 
         p = F.softmax(logits.view(-1, self.glimpse, v_num * q_num), 2)
         return p.view(-1, self.glimpse, v_num, q_num), logits
@@ -221,13 +227,13 @@ class SimpleCNN(nn.Module):
             weights = {}  # Will crash later if empty, but handled for now
 
         self.conv1 = self.init_conv(1, 64, weights.get('conv1'), weights.get('b1'))
-        self.conv1_bn = nn.BatchNorm2d(64, momentum=0.05)
+        # self.conv1_bn = nn.BatchNorm2d(64, momentum=0.05)
         self.conv2 = self.init_conv(64, 64, weights.get('conv2'), weights.get('b2'))
-        self.conv2_bn = nn.BatchNorm2d(64, momentum=0.05)
+        # self.conv2_bn = nn.BatchNorm2d(64, momentum=0.05)
         self.conv3 = self.init_conv(64, 64, weights.get('conv3'), weights.get('b3'))
-        self.conv3_bn = nn.BatchNorm2d(64, momentum=0.05)
+        # self.conv3_bn = nn.BatchNorm2d(64, momentum=0.05)
         self.conv4 = self.init_conv(64, 64, weights.get('conv4'), weights.get('b4'))
-        self.conv4_bn = nn.BatchNorm2d(64, momentum=0.05)
+        # self.conv4_bn = nn.BatchNorm2d(64, momentum=0.05)
 
     def init_conv(self, inp, out, weight, bias):
         conv = nn.Conv2d(inp, out, 3, 2, 1, bias=True)
@@ -242,13 +248,13 @@ class SimpleCNN(nn.Module):
 
     def forward(self, x):
         out = F.relu(self.conv1(x))
-        out = self.conv1_bn(out)
+        # out = self.conv1_bn(out)
         out = F.relu(self.conv2(out))
-        out = self.conv2_bn(out)
+        # out = self.conv2_bn(out)
         out = F.relu(self.conv3(out))
-        out = self.conv3_bn(out)
+        # out = self.conv3_bn(out)
         out = F.relu(self.conv4(out))
-        out = self.conv4_bn(out)
+        # out = self.conv4_bn(out)
         # Global pooling (approximate based on original repo logic)
         out = out.view(out.size(0), 64, -1)
         return torch.mean(out, 2)
@@ -328,6 +334,9 @@ class MEVF(nn.Module):
         # Result: [B, 1, 64+64] = [B, 1, 128]
         v_emb = torch.cat((maml_feat, ae_feat), 2)
 
+        # --- L2 NORMALIZATION ---
+        v_emb = F.normalize(v_emb, p=2, dim=2)
+
         return v_emb
 
 
@@ -398,7 +407,7 @@ class BAN(nn.Module):
 
         # Bilinear Residual Network (The reasoning steps)
         self.b_net = nn.ModuleList([
-            BCNet(self.v_dim, args.num_hid, args.num_hid, None, k=1)
+            BCNet(self.v_dim, args.num_hid, args.num_hid, None, k=3)
             for _ in range(args.gamma)
         ])
         self.q_prj = nn.ModuleList([
@@ -415,15 +424,18 @@ class BAN(nn.Module):
             v_emb:    [B, 1, 128] (From MEVF)
             q_tokens: [B, L]
         """
-        # 1. Text Feature Extraction
+        # 1. Create Mask (True where token is padding/0)
+        q_mask = (q_tokens == 0)
+
+        # 2. Text Feature Extraction
         w_emb = self.w_emb(q_tokens)  # [B, L, 300]
         self.q_rnn.flatten_parameters()
         q_out, _ = self.q_rnn(w_emb)
         q_emb = q_out  # [B, L, hid]
 
-        # 2. BAN Loop
+        # 3. BAN Loop
         b_emb = [0] * self.args.gamma
-        att, logits = self.v_att.forward_all(v_emb, q_emb)  # Calculate Attention map
+        att, logits = self.v_att.forward_all(v_emb, q_emb, v_mask=True, q_mask=q_mask)  # Calculate Attention map
 
         for g in range(self.args.gamma):
             # Bilinear Connect: Mix Visual (v_emb) and Question (q_emb)
@@ -441,8 +453,11 @@ class BAN(nn.Module):
             q_emb_new = self.q_prj[g](weighted_feat.unsqueeze(1))
             q_emb = q_emb + q_emb_new
 
-            # 3. Classification
-        q_final = q_emb.sum(1)  # Simple aggregation
+        # 4. Final Classification
+        # Mask the padding positions before summing so we don't sum up noise
+        q_emb_masked = q_emb.masked_fill(q_mask.unsqueeze(-1), 0.0)
+        q_final = q_emb_masked.sum(1)
+
         logits = self.classifier(q_final)
 
         return logits
@@ -507,8 +522,11 @@ class Dictionary:
 
 
 class VQARADDataset(Dataset):
-    def __init__(self, split, dictionary=None, ans2label=None):
-        self.hf_data = load_dataset("flaviagiammarino/vqa-rad", split="train" if split == "train" else "test")
+    def __init__(self, split="train", dictionary=None, ans2label=None, data_list=None):
+        if data_list is not None:
+            self.hf_data = data_list
+        else:
+            self.hf_data = load_dataset("flaviagiammarino/vqa-rad", split="train" if split == "train" else "test")
 
         # Build Vocab
         if dictionary is None:
@@ -555,10 +573,11 @@ class VQARADDataset(Dataset):
         q_tensor = torch.tensor(tokens).long()
 
         ans_str = str(item['answer']).lower()
-        # Default to 0 (padding/unknown) if not found, usually 0 isn't a valid answer class but acts as fallback
-        ans_idx = self.ans2label.get(ans_str, 0)
-
-        target = torch.tensor(ans_idx).long()  # Return a single integer LongTensor
+        if ans_str in self.ans2label:
+            ans_idx = self.ans2label[ans_str]
+            target = torch.tensor(ans_idx).long()
+        else:
+            target = torch.tensor(-100).long()
 
         return maml_tensor, ae_tensor, q_tensor, target
 
@@ -570,17 +589,19 @@ class VQARADDataset(Dataset):
 class Args:
     maml_path = 'pretrained_maml.weights'  # Ensure this file exists
     ae_path = 'pretrained_ae.pth'  # Ensure this file exists
-    reasoning_module = "SAN"
+    reasoning_module = "BAN"
     num_hid = 1024
     gamma = 2
-    lr = 0.002
-    epochs = 20
+    lr = 5e-4
+    epochs = 50
     batch_size = 16
 
 
 def train():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     args = Args()
+
+    ACCUMULATION_STEPS = 4
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     save_dir = f"./model/MEVF_{args.reasoning_module}_{timestamp}"
@@ -589,16 +610,43 @@ def train():
     setup_logger(save_dir, base_name)
 
     print("Preparing Data...")
-    train_dset = VQARADDataset('train')
-    # test_dset = VQARADDataset('test', dictionary=train_dset.dictionary, ans2label=train_dset.ans2label)
+    full_hf_dataset = load_dataset("flaviagiammarino/vqa-rad", split="train")
+
+    dataset_list = list(full_hf_dataset)
+    random.seed(42)
+    random.shuffle(dataset_list)
+
+    split_idx = int(len(dataset_list) * 0.9)
+    train_subset = dataset_list[:split_idx]
+    val_subset = dataset_list[split_idx:]
+
+    print(f"✅ Splits aligned: Train={len(train_subset)}, Val={len(val_subset)}")
+
+    train_dset = VQARADDataset(data_list=train_subset)
+    val_dset = VQARADDataset(dictionary=train_dset.dictionary, ans2label=train_dset.ans2label, data_list=val_subset)
 
     train_loader = DataLoader(train_dset, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dset, batch_size=args.batch_size, shuffle=False)
 
     print(f"Initializing Model (Vocab: {train_dset.vocab_size}, Ans: {train_dset.num_ans_candidates})...")
     model = VQAModel(train_dset, args, reasoning_module=Args.reasoning_module).to(device)
 
-    optimizer = torch.optim.Adamax(model.parameters(), lr=args.lr)
-    criterion = nn.CrossEntropyLoss()
+    # 1. Separate the parameters into two groups
+    # Group A: The delicate visual backbone (MAML + AE)
+    backbone_ids = list(map(id, model.mevf.parameters()))
+
+    # Group B: Everything else (BAN, Classifier, Embeddings) - The "Head"
+    head_params = list(filter(lambda p: id(p) not in backbone_ids, model.parameters()))
+
+    # 2. Define Optimizer with different Learning Rates
+    optimizer = torch.optim.Adamax([
+        {'params': model.mevf.parameters(), 'lr': 0.0},  # Very slow updates for Vision (Safe)
+        {'params': head_params, 'lr': args.lr}  # Normal updates for Reasoning
+    ])
+
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
+
+    criterion = nn.CrossEntropyLoss(ignore_index=-100)
 
     start_time = time.time()
     best_acc = 0.0
@@ -618,12 +666,14 @@ def train():
 
             optimizer.zero_grad()
             preds = model(maml_img, ae_img, q)
-
             loss = criterion(preds, label)
+            loss = loss / ACCUMULATION_STEPS
             loss.backward()
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.25)
-            optimizer.step()
+            if (i + 1) % ACCUMULATION_STEPS == 0 or (i + 1) == len(train_loader):
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.25)
+                optimizer.step()
+                optimizer.zero_grad()
 
             total_loss += loss.item()
 
@@ -634,13 +684,43 @@ def train():
         avg_loss = total_loss / len(train_loader)
         accuracy = 100 * correct / total_samples
 
-        print(f"Epoch {epoch + 1}/{args.epochs} | Loss: {avg_loss:.4f} | Acc: {accuracy:.2f}%")
+        model.eval()
+        val_correct = 0
+        val_total = 0
+        val_running_loss = 0.0
 
-        if accuracy > best_acc:
-            best_acc = accuracy
+        with torch.no_grad():
+            for _, (maml_img, ae_img, q, label) in enumerate(val_loader):
+                maml_img = maml_img.to(device)
+                ae_img = ae_img.to(device)
+                q = q.to(device)
+                label = label.to(device)
+
+                preds = model(maml_img, ae_img, q)
+
+                # Calculate Validation Loss
+                loss = criterion(preds, label)
+                val_running_loss += loss.item()
+
+                # Calculate accuracy only (ignore loss for speed)
+                pred_indices = torch.argmax(preds, dim=1)
+                val_correct += (pred_indices == label).sum().item()
+                val_total += label.size(0)
+
+        val_loss = val_running_loss / len(val_loader)
+        val_acc = 100 * val_correct / val_total
+
+        print(f"Epoch {epoch + 1}/{args.epochs} | Train Loss: {avg_loss:.4f} | Train Acc: {accuracy:.2f}% | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")
+
+        scheduler.step(avg_loss)
+
+        if val_acc > best_acc:
+            best_acc = val_acc
             best_save_path = os.path.join(save_dir, f"{Args.reasoning_module}_best_model.pth")
             torch.save(model.state_dict(), best_save_path)
             print(f">>> New Best Accuracy! Saved to {best_save_path}")
+
+        model.train()
 
     end_time = time.time()
     total_time = end_time - start_time

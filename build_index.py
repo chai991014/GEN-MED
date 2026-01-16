@@ -25,6 +25,7 @@ def main():
     # 3. Build & Save Index
     # This function automatically checks for cache, builds if missing, and saves to disk.
     print("🏗️ Building Index (this may take a while)...")
+    dataset = dataset.add_column("idx", range(len(dataset)))
     retriever.build_index(dataset)
 
     print("✅ Index built and saved successfully!")
