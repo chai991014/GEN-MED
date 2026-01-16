@@ -91,13 +91,14 @@ class MultimodalRetriever:
         index.add(vectors)
         return index
 
-    def build_index(self, dataset):
+    def build_index(self, dataset, index_name="default"):
         """
         Indexes the provided dataset with caching support.
         """
         self.knowledge_base = dataset
-        text_index_path = os.path.join(self.cache_dir, "text.index")
-        img_index_path = os.path.join(self.cache_dir, "image.index")
+        safe_name = "".join(c for c in index_name if c.isalnum() or c in ('_', '-'))
+        text_index_path = os.path.join(self.cache_dir, f"{safe_name}_text.index")
+        img_index_path = os.path.join(self.cache_dir, f"{safe_name}_image.index")
 
         # Load Existing Indices
         if os.path.exists(text_index_path) and os.path.exists(img_index_path):
@@ -107,7 +108,7 @@ class MultimodalRetriever:
             print("✅ Indices loaded successfully.")
             return
 
-        print(f"🏗️ Index not found. Encoding {len(dataset)} samples...")
+        print(f"🏗️ Index ({safe_name}) not found. Encoding {len(dataset)} samples...")
 
         # Encode Texts (Questions)
         questions = [item['question'] for item in dataset]
@@ -123,17 +124,17 @@ class MultimodalRetriever:
         img_feats = []
         images = [item['image'] for item in dataset]
 
-        for i in tqdm(range(0, len(images), batch_size), desc="Indexing Images"):
+        for i in tqdm(range(0, len(images), batch_size), desc=f"Indexing ({safe_name})"):
             batch = images[i: i + batch_size]
             img_feats.append(self._get_image_features(batch))
         img_embeds = torch.cat(img_feats, dim=0)
 
         # Build FAISS Indices
-        print("⚡ Building FAISS Indices...")
+        print(f"⚡ Building FAISS Indices ({safe_name})...")
         self.text_index = self._build_faiss_index(text_embeds)
         self.image_index = self._build_faiss_index(img_embeds)
 
-        # Save FAISS Indices
+        # Save with Unique Names
         print(f"💾 Saving indices to {self.cache_dir}...")
         faiss.write_index(self.text_index, text_index_path)
         faiss.write_index(self.image_index, img_index_path)

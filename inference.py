@@ -5,13 +5,24 @@ from tqdm import tqdm
 import torch
 import gc
 import pandas as pd
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 from llm_adapter import get_llm_adapter
 from rag_pipeline import RAGPipeline
 from retriever import MultimodalRetriever
 from mevf.adapter import MEVFAdapter
 from utils import get_config, normalize_text
-import config
+
+
+def load_data_source(path, split):
+    """Helper to load from disk if local path exists, else from HF Hub"""
+    if os.path.exists(path) and os.path.isdir(path):
+        print(f"   (Loading from local disk: {path})")
+        # load_from_disk returns a DatasetDict (containing all splits)
+        full_ds = load_from_disk(path)
+        return full_ds[split]
+    else:
+        # Standard Hugging Face loading
+        return load_dataset(path, split=split)
 
 
 def run_inference(config_dict):
@@ -59,7 +70,7 @@ def run_inference(config_dict):
             retriever_engine = MultimodalRetriever(device="cpu")
 
             print("📂 Loading Knowledge Base (Train Split)...")
-            train_dataset = load_dataset(config["DATASET_ID"], split="train")
+            train_dataset = load_dataset("flaviagiammarino/vqa-rad", split="train")
             train_dataset = train_dataset.add_column("idx", range(len(train_dataset)))
 
             # Wrap LLM with RAG Pipeline
@@ -79,10 +90,10 @@ def run_inference(config_dict):
     # 3. INFERENCE LOOP
     # ==========================================
     print("\n📂 Loading Test Dataset...")
-    dataset = load_dataset(config["DATASET_ID"], split=config["DATASET"])
+    dataset = load_data_source(config["DATASET_ID"], split=config["DATASET"])
 
     if config["TEST_MODE"]:
-        dataset = dataset.select(range(3))
+        dataset = dataset.select(range(20))
         print("⚠️ WARNING: Running in Test Mode (20 samples only)")
 
     results = []
@@ -151,24 +162,7 @@ def run_inference(config_dict):
 
 
 if __name__ == "__main__":
-
-    # CONFIG_DICT = [getattr(config, f"CONFIG_{i + 2}") for i in range(23)]
-    # # i = 1
-    # for cfg in CONFIG_DICT:
-    #     # print("\n" + "=" * 60)
-    #     # print(f"📄 CONFIG_{i} DETAILS")
-    #     # print("-" * 60)
-    #     #
-    #     # # Iterate through the dictionary and print item by item
-    #     # for key, value in cfg.items():
-    #     #     # Using f-string formatting for a clean, aligned look
-    #     #     print(f"   • {key:<15} : {value}")
-    #     #
-    #     # print("=" * 60)
-    #     # i += 1
-    #
-    #     run_inference(cfg)
-
+    import config
     if len(sys.argv) < 2:
         sys.exit(1)
 

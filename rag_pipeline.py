@@ -19,6 +19,7 @@ class RAGPipeline:
 
         self.llm = llm_adapter
         self.retriever = retrieval_engine
+        self.xai_retriever = None
         self.k = k
         self.alpha = alpha
 
@@ -27,9 +28,9 @@ class RAGPipeline:
         if self.llm.model is None:
             self.llm.load()
 
-    def build_index(self, dataset):
+    def build_index(self, dataset, index_name="default"):
         """Delegates indexing to the retrieval engine."""
-        self.retriever.build_index(dataset)
+        self.retriever.build_index(dataset, index_name=index_name)
 
     def _retrieve_context(self, image, question):
         """Helper to retrieve and format context string."""

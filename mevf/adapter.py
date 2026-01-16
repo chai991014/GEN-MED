@@ -80,7 +80,13 @@ class MEVFAdapter:
             logits = self.model(maml_in, ae_in, q_in)
             pred_idx = torch.argmax(logits, dim=1).item()
 
-        return self.label2ans[pred_idx]
+        return {
+            "prediction": self.label2ans[pred_idx],
+            "reflexion_draft": "",
+            "reflexion_critique": "",
+            "retrieved_ids": [],
+            "retrieved_scores": []
+        }
 
     def judge_answer(self, image, question, raw_pred):
         # MEVF is a classifier, so raw_pred is already the best class.
