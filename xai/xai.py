@@ -7,6 +7,7 @@ from scipy.ndimage import gaussian_filter
 import google.generativeai as genai
 import json
 import re
+from collections import Counter
 
 
 class FastOcclusionExplainer:
@@ -126,49 +127,6 @@ class FastOcclusionExplainer:
             prob = torch.softmax(logits, dim=-1)[target_token_id].item()
             return prob
 
-
-class CounterfactualExplainer:
-    """
-    Fast Text-Based Robustness Checks.
-    """
-
-    def __init__(self, adapter):
-        self.adapter = adapter
-
-    def evaluate(self, image, original_question, original_prediction):
-        report = []
-        score = 0
-
-        # 1. Hallucination Check
-        pathologies = ["fracture", "pneumonia", "tumor", "mass"]
-        targets = [p for p in pathologies if p.lower() not in original_prediction.lower()]
-
-        import random
-        if targets:
-            neg = random.choice(targets)
-            q_neg = f"Is there a {neg}?"
-            # Use direct generation
-            ans = self.adapter.generate(image, q_neg, context="").get("prediction", "")
-
-            report.append(f"- **Q:** {q_neg} \n - **A:** {ans}")
-            if "no" in ans.lower() or "normal" in ans.lower():
-                score += 1
-            else:
-                report.append("_(⚠️ Warning: Possible Hallucination)_")
-
-        # 2. Consistency Check
-        rephrased = original_question.replace("What is", "Identify").replace("is there", "do you see")
-        ans_rep = self.adapter.generate(image, rephrased, context="").get("prediction", "")
-
-        is_consistent = (original_prediction.lower() in ans_rep.lower()) or (
-                    ans_rep.lower() in original_prediction.lower())
-        report.append(f"\n- **Consistency:** {'✅ Pass' if is_consistent else '⚠️ Fail'}")
-        if is_consistent:
-            score += 1
-
-        return "\n".join(report)
-
-
 def apply_colormap(image, mask):
     if mask is None: return image
     mask[mask < 0.2] = 0
@@ -180,6 +138,262 @@ def apply_colormap(image, mask):
         return Image.fromarray(overlayed)
     except:
         return image
+
+
+class RetrievalCounterfactual:
+    """
+    Generates Visual Counterfactuals using the RAG database.
+    It finds a 'Negative' example (Healthy) that is visually similar to the 'Positive' input.
+    """
+
+    def __init__(self, inference_engine):
+        self.engine = inference_engine  # This gives access to the RAG retriever
+
+    def find_counterfactual(self, image, original_question, original_prediction_text):
+        """
+        1. Embed the query image.
+        2. Search the RAG database (Knowledge Base).
+        3. Filter for an image where the Ground Truth is OPPOSITE to the current prediction.
+        """
+        # Safety check for RAG
+        if not hasattr(self.engine, 'xai_retriever') or self.engine.xai_retriever is None:
+            return None, "XAI Retrieval module not active. Enable RAG to use Retrieval Counterfactuals."
+
+        # Use the XAI Retriever (Super KB)
+        retriever = self.engine.xai_retriever
+
+        # 1. Retrieve top 10 similar images
+        # We need more candidates (k=10) to increase odds of finding an OPPOSITE case
+        candidates = retriever.retrieve(original_question, image, k=20, alpha=0.5)
+
+        # 2. Heuristic: Determine the 'target' opposite label
+        # If prediction is "Yes", we want a "No" (and vice versa)
+        clean_pred = original_prediction_text.lower().strip()
+        is_binary_pred = clean_pred in ["yes", "no"]
+
+        cf_item = None
+
+        # 3. Search Loop
+        for cand in candidates:
+            cand_ans = str(cand['answer']).lower().strip()
+
+            # --- SCENARIO A: Binary Prediction (Yes/No) ---
+            if is_binary_pred:
+                # We strictly want the OPPOSITE answer
+                target_gt = "no" if clean_pred == "yes" else "yes"
+                if cand_ans == target_gt:
+                    cf_item = cand
+                    break
+
+            # --- SCENARIO B: Open-Ended Prediction (e.g., "Pneumonia") ---
+            else:
+                # We want a case that is visually similar but has a DIFFERENT answer.
+
+                # Rule 1: It cannot be the exact same answer (That's a supporting example, not a CF)
+                if cand_ans == clean_pred:
+                    continue
+
+                # Rule 2: It should not be a "subset" string (e.g. "left lung" vs "lung")
+                # This avoids weak counterfactuals where the difference is just specificity.
+                if cand_ans in clean_pred or clean_pred in cand_ans:
+                    continue
+
+                # Rule 3: Ignore generic/unhelpful answers if the prediction was specific
+                if cand_ans in ["chest x-ray", "pa", "ap", "film"]:
+                    continue
+
+                # If passed checks, we found a "Contrast Case"
+                cf_item = cand
+                break
+
+        # 4. Handle "No Counterfactual Found"
+        if not cf_item:
+            msg = "Could not find a valid counterfactual (all retrieved neighbors had similar answers to your prediction)."
+            return None, msg
+
+        # 5. Fetch Image & Format Report
+        ds = retriever.knowledge_base
+        try:
+            cf_image = ds[int(cf_item['idx'])]['image'].convert("RGB")
+        except:
+            return None, "Error loading counterfactual image."
+
+        return cf_image, f"""
+        ### 🔄 Visual Counterfactual Found
+        **Analysis:**
+        The model predicted **'{original_prediction_text}'**.
+        To verify this, we retrieved a visually similar historical case where the Ground Truth was **'{cf_item['answer']}'**.
+
+        **Similar Historical Case:**
+        - **Question:** {cf_item['question']}
+        - **Answer:** {cf_item['answer']}
+
+        *If the model is robust, it should visually distinguish the pathology in the Input vs. the Healthy Counterfactual.*
+        """
+
+
+class ConceptExplainer:
+    """
+    Handles Concept-Based Explanations using two strategies:
+    1. Zero-Shot Activation (Fixed List)
+    2. Neighbor-Based Consensus (Open-Ended Discovery)
+    """
+
+    def __init__(self, inference_engine):
+        # We need the XAI retriever (BioMedCLIP) for encoding and searching
+        if hasattr(inference_engine, 'xai_retriever') and inference_engine.xai_retriever is not None:
+            self.model = inference_engine.retriever.model
+            self.processor = inference_engine.retriever.preprocess
+            self.tokenizer = inference_engine.retriever.tokenizer
+            self.device = inference_engine.retriever.device
+            self.retriever = inference_engine.retriever
+        else:
+            self.model = None
+
+    def evaluate(self, image, concepts=None):
+        """
+        Method 1: Zero-Shot Concept Activation.
+        Uses BioMedCLIP to measure the similarity between the image and high-level
+        medical concepts. This satisfies the 'Concept-based Explanation' rubric.
+        """
+        if not self.model:
+            return None, "RAG/BioMedCLIP is not loaded. Cannot run Concept Analysis."
+
+        if concepts is None:
+            # Default medical concepts to test against
+            concepts = [
+                "Normal Chest X-Ray",
+                "Pleural Effusion",
+                "Pneumonia",
+                "Consolidation",
+                "Edema",
+                "Atelectasis",
+                "Cardiomegaly",
+                "Pneumothorax",
+                "Fracture",
+                "Support Devices"
+            ]
+
+        # 1. Process Image
+        image_input = self.processor(image).unsqueeze(0).to(self.device)
+
+        # 2. Process Text Concepts
+        text_inputs = self.tokenizer(concepts).to(self.device)
+
+        # 3. Calculate Similarity (Concept Activation)
+        with torch.no_grad():
+            image_features = self.model.encode_image(image_input)
+            text_features = self.model.encode_text(text_inputs)
+
+            # Normalize features
+            image_features /= image_features.norm(dim=-1, keepdim=True)
+            text_features /= text_features.norm(dim=-1, keepdim=True)
+
+            # Dot Product = Similarity Score
+            similarity = (100.0 * image_features @ text_features.T).softmax(dim=-1)
+            scores = similarity[0].cpu().numpy()
+
+        # 4. Format Output
+        results = sorted(zip(concepts, scores), key=lambda x: x[1], reverse=True)
+
+        # Create a Bar Chart text representation
+        report = "### 🧠 Concept Activation Analysis (BioMedCLIP)\n"
+        report += "This analysis measures which high-level medical concepts are most activated by this image.\n\n"
+
+        for concept, score in results:
+            bar_len = int(score * 20)
+            bar = "█" * bar_len + "░" * (20 - bar_len)
+            report += f"- **{concept}**:\n"
+            report += f"`{bar}` ({score * 100:.1f}%)\n"
+
+        return results, report
+
+    def discover_concepts(self, image, question, k=30):
+        """
+        Method 2: Neighbor-Based Concept Consensus.
+        Retrieves k similar cases and extracts the most common keywords (concepts)
+        from their Ground Truth answers.
+        """
+        if not self.model:
+            return "XAI Retrieval module not active."
+
+        # 1. Retrieve Neighbors
+        results = self.retriever.retrieve(question, image, k=k)
+
+        # 2. Define Concept Mapping (The "Medical Dictionary")
+        # This groups scattered words into meaningful categories
+        concept_map = {
+            "Lung Opacity/Pneumonia": ["opacity", "opacities", "consolidation", "infiltrate", "pneumonia", "airspace",
+                                       "density"],
+            "Atelectasis": ["atelectasis", "collapse", "volume loss"],
+            "Pleural Effusion": ["effusion", "fluid", "blunting", "costophrenic"],
+            "Pneumothorax": ["pneumothorax", "air", "pleural space"],
+            "Cardiomegaly/Heart": ["cardiomegaly", "enlarged", "heart", "cardiac", "silhouette"],
+            "Edema/Congestion": ["edema", "congestion", "vascular", "hilar", "prominence"],
+            "Fracture/Bone": ["fracture", "broken", "bone", "rib", "clavicle", "skeletal"],
+            "Support Device": ["tube", "line", "catheter", "pacemaker", "clip", "wire"],
+            "Normal/Healthy": ["normal", "unremarkable", "clear", "negative", "no acute"],
+        }
+
+        # Initialize Scores (Float, because we use weighted ranking)
+        concept_scores = {key: 0.0 for key in concept_map}
+
+        # 3. Process Neighbors with Weighted Voting
+        for i, item in enumerate(results):
+            text = str(item['answer']).lower()
+
+            # Weight Decay: Rank 1 is worth 1.0, Rank 50 is worth ~0.2
+            # This ensures the BEST visual matches matter more than the noisy tail
+            weight = 1.0 / (1.0 + (i * 0.1))
+
+            q_text = str(item['question']).lower()
+            a_text = str(item['answer']).lower()
+
+            # Text to analyze: Always check Answer, check Question if Answer is short/vague
+            text_to_check = a_text
+            if len(a_text) < 5 or a_text in ['yes', 'no']:
+                text_to_check += " " + q_text
+
+            # Check against dictionary
+            matched_any = False
+            for category, keywords in concept_map.items():
+                if any(kw in text_to_check for kw in keywords):
+                    concept_scores[category] += weight
+                    matched_any = True
+
+            # Fallback: If no specific pathology found, check for generic "Yes/No"
+            # (Optional, but helps context)
+
+        # 4. Sort & Normalize
+        total_weight = sum(concept_scores.values()) + 1e-9  # Avoid div/0
+
+        # Convert to percentages
+        final_results = []
+        for cat, score in concept_scores.items():
+            if score > 0:
+                percent = (score / total_weight) * 100
+                final_results.append((cat, percent))
+
+        # Sort by score
+        final_results.sort(key=lambda x: x[1], reverse=True)
+
+        # 5. Generate Report
+        report = "### 🧬 Neighbor-Based Concept Consensus\n"
+        report += f"Analyzed **{k} neighbors** using Semantic Grouping (weighted by similarity).\n"
+
+        # Filter: Only show concepts with > 5% relevance
+        active_concepts = [c for c in final_results if c[1] > 2.0]
+
+        if not active_concepts:
+            report += "*No specific medical pathology consensus found (mostly generic conversation).*"
+        else:
+            for term, conf in active_concepts[:5]:  # Top 5
+                bar_len = int(min(20, (conf / 100) * 40))  # Scale bar
+                bar = "█" * bar_len + "░" * (20 - bar_len)
+                report += f"- **{term}**:\n"
+                report += f"`{bar}` ({conf:.1f}%)\n"
+
+        return report
 
 
 class ReflexionJudge:
