@@ -3,3 +3,5 @@ __pycache__
 LLaVA-Med/
 rag_cache/
 mevf/model/
+finetune/dora-llava
+finetune/qlora-llava
