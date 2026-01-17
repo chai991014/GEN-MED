@@ -176,6 +176,9 @@ class QwenAdapter(BaseVQAAdapter):
 
     def _run_inference(self, image, text_prompt, max_tokens=128):
         from qwen_vl_utils import process_vision_info
+        print("\n" + "=" * 60)
+        print(text_prompt)
+        print("\n" + "=" * 60)
         messages = [
             {"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": text_prompt}]}]
         text_input = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)

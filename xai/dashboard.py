@@ -7,7 +7,10 @@ from datasets import load_dataset, load_from_disk, concatenate_datasets
 from llm_adapter import get_llm_adapter
 from rag_pipeline import RAGPipeline
 from retriever import MultimodalRetriever
-from xai import FastOcclusionExplainer, ConceptExplainer, RetrievalCounterfactual, ReflexionJudge, RAGJudge, apply_colormap
+from xai import FastOcclusionExplainer, AttentionExplainer, ConceptExplainer, RetrievalCounterfactual, ReflexionJudge, RAGJudge, apply_colormap
+from PIL import Image, ImageDraw
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 
 
 # --- Default Config ---
@@ -29,17 +32,17 @@ CONFIG = {
 # --- Model & Adapter / Dataset Mapping ---
 MODEL_OPTIONS = {
     "LLaVA-Med 1.5 Mistral 7B (Base)": {"model": "microsoft/llava-med-v1.5-mistral-7b", "adapter": None},
-    "LLaVA-Med 1.5 Mistral 7B (QLoRA Fine-tuned)": {"model": "../finetune/qlora-llava", "adapter": None},
-    "LLaVA-Med 1.5 Mistral 7B (Dora Fine-tuned)": {"model": "../finetune/dora-llava", "adapter": None},
+    "LLaVA-Med 1.5 Mistral 7B (QLoRA)": {"model": "../finetune/qlora-llava", "adapter": None},
+    "LLaVA-Med 1.5 Mistral 7B (Dora)": {"model": "../finetune/dora-llava", "adapter": None},
     "Qwen3-VL-2B-Instruct (Base)": {"model": "Qwen/Qwen3-VL-2B-Instruct", "adapter": None},
-    "Qwen3-VL-2B-Instruct (QLoRA Fine-tuned)": {"model": "Qwen/Qwen3-VL-2B-Instruct",
+    "Qwen3-VL-2B-Instruct (QLoRA)": {"model": "Qwen/Qwen3-VL-2B-Instruct",
                                                 "adapter": "../finetune/qlora-qwen3-2b/checkpoint-600"},
-    "Qwen3-VL-2B-Instruct (Dora Fine-tuned)": {"model": "Qwen/Qwen3-VL-2B-Instruct",
+    "Qwen3-VL-2B-Instruct (Dora)": {"model": "Qwen/Qwen3-VL-2B-Instruct",
                                                "adapter": "../finetune/dora-qwen3-2b/checkpoint-580"},
     "Qwen3-VL-4B-Instruct (Base)": {"model": "Qwen/Qwen3-VL-4B-Instruct", "adapter": None},
-    "Qwen3-VL-4B-Instruct (QLoRA Fine-tuned)": {"model": "Qwen/Qwen3-VL-4B-Instruct",
+    "Qwen3-VL-4B-Instruct (QLoRA)": {"model": "Qwen/Qwen3-VL-4B-Instruct",
                                                 "adapter": "../finetune/qlora-qwen3-4b/checkpoint-390"},
-    "Qwen3-VL-4B-Instruct (Dora Fine-tuned)": {"model": "Qwen/Qwen3-VL-4B-Instruct",
+    "Qwen3-VL-4B-Instruct (Dora)": {"model": "Qwen/Qwen3-VL-4B-Instruct",
                                                "adapter": "../finetune/dora-qwen3-4b/checkpoint-390"},
 }
 
@@ -59,7 +62,7 @@ DATASET_OPTIONS = {
 inference_engine = None
 LOADED_CONFIG = None
 MAX_RAG_K = 10
-GOOGLE_API_KEY = "AIzaSyBfGm6wPQb-ztNZA_heS8-bPumDfQtHObY"
+GOOGLE_API_KEY = os.getenv("API_KEY")
 
 
 def get_img_html(img_path):
@@ -131,7 +134,15 @@ def create_md_accordion(label_md, initial_visible=False, visibility=True):
         outputs=[is_open, content_group, btn]
     )
 
-    return header_row, content_group
+    return header_row, content_group, is_open, btn
+
+
+def get_open_acc():
+    return gr.update(visible=True), True, "Hide 🔼"
+
+
+def get_closed_acc():
+    return gr.update(visible=False), False, "Show 🔽"
 
 
 def load_engine(model_key, use_rag, use_reflexion, prompt_style, k_val, alpha_val):
@@ -165,8 +176,47 @@ def load_engine(model_key, use_rag, use_reflexion, prompt_style, k_val, alpha_va
     llm = get_llm_adapter(config["MODEL_TYPE"], **llm_params)
     llm.load()
 
+    print("\n🧠 Building XAI Super-Index (VQA-RAD + SLAKE)...")
+    try:
+        retriever_xai = MultimodalRetriever(device="cpu")  # Keep on CPU to save VRAM
+
+        # Load VQA-RAD
+        ds_rad = load_dataset("flaviagiammarino/vqa-rad", split="train")
+
+        # Load SLAKE (Robust Merge)
+        try:
+            ds_slake = load_data_source(DATASET_OPTIONS["SLAKE"]["path"], "train")
+
+            # Column Cleanup
+            common_cols = ["image", "question", "answer"]
+            ds_rad_clean = ds_rad.select_columns(common_cols)
+
+            # Cast SLAKE image format if needed
+            if "image" in ds_slake.features and ds_slake.features["image"] != ds_rad.features["image"]:
+                from datasets import Image as DImage
+                ds_slake = ds_slake.cast_column("image", DImage())
+
+            ds_slake_clean = ds_slake.select_columns(common_cols)
+            ds_super_kb = concatenate_datasets([ds_rad_clean, ds_slake_clean])
+        except Exception as e:
+            print(f"⚠️ SLAKE Merge failed (using VQA-RAD only for XAI): {e}")
+            ds_super_kb = ds_rad
+
+        # Create unique index for XAI lookup
+        if "idx" in ds_super_kb.column_names:
+            ds_super_kb = ds_super_kb.remove_columns("idx")
+        ds_super_kb = ds_super_kb.add_column("idx", range(len(ds_super_kb)))
+
+        # Build Index (with unique name to avoid conflict)
+        retriever_xai.build_index(ds_super_kb, index_name="xai_super_kb")
+
+    except Exception as e:
+        print(f"❌ XAI Retriever Init Failed: {e}")
+        retriever_xai = None
+
     # 3. RAG Wrapper (Applied if RAG is toggled, regardless of Reflexion)
     if config["USE_RAG"]:
+        print("\n⚡ Building Inference Index (VQA-RAD)...")
         retriever_engine = MultimodalRetriever(device="cpu")
         # Load Knowledge Base
         ds_rad = load_dataset("flaviagiammarino/vqa-rad", split="train")
@@ -179,38 +229,11 @@ def load_engine(model_key, use_rag, use_reflexion, prompt_style, k_val, alpha_va
             alpha=config["RAG_ALPHA"],
         )
         inference_engine.build_index(ds_rad)
-
-        # XAI RETRIEVER (Robust, VQA-RAD + SLAKE)
-        retriever_xai = MultimodalRetriever(device="cpu")
-        try:
-            ds_slake = load_data_source(DATASET_OPTIONS["SLAKE"]["path"], "train")
-
-            common_cols = ["image", "question", "answer"]
-            ds_rad_clean = ds_rad.select_columns(common_cols)
-            ds_slake_clean = ds_slake.select_columns(common_cols)
-
-            ds_super_kb = concatenate_datasets([ds_rad_clean, ds_slake_clean])
-        except Exception as e:
-            print(f"⚠️ Merge failed (using VQA-RAD only for XAI): {e}")
-            ds_super_kb = ds_rad
-
-        # Check if 'idx' exists (from fallback or accidental carry-over) and remove it first
-        if "idx" in ds_super_kb.column_names:
-            ds_super_kb = ds_super_kb.remove_columns("idx")
-
-        # Add index for the Super KB
-        ds_super_kb = ds_super_kb.add_column("idx", range(len(ds_super_kb)))
-
-        # Build the XAI Index
-        retriever_xai.build_index(ds_super_kb, index_name="xai_super_kb")
-
-        # --- C. ATTACH XAI RETRIEVER TO ENGINE ---
-        # We attach it as a separate attribute so xai.py can find it
-        inference_engine.xai_retriever = retriever_xai
-
     else:
         # Standard flow without RAG
         inference_engine = llm
+
+    inference_engine.xai_retriever = retriever_xai
 
     LOADED_CONFIG = {
         "model": model_key,
@@ -225,12 +248,25 @@ def load_engine(model_key, use_rag, use_reflexion, prompt_style, k_val, alpha_va
 
 
 def run_gui_inference(dataset_input, idx, model_key, use_rag, use_reflexion, prompt_style, k_val, alpha_val):
+    """
+    outputs = [
+    status, img_out, question, gt, prediction, reflex_intermediate_out, retrieval_log_out,
+    attention_out, occlusion_out, concept_rpt_zs_out, concept_rpt_nc_out, cf_visual_out, cf_visual_report_out,
+    reflex_judge_report_out, rag_judge_summary_out, prediction_state, *rag_atomic_components
+    ]
+    """
     global inference_engine, LOADED_CONFIG
 
     empty_rag = [gr.update(visible=False), None, None, gr.update(visible=False)] * MAX_RAG_K
     empty_xai = "**Run XAI Analysis** to generate the report."
     empty_report = "**Run LLM as Judge Evaluation** to generate the report."
-    reset_results = (None, None, "", "", "", "", "No retrieval", None, empty_xai, empty_xai, None, empty_xai, empty_report, empty_report, None, *empty_rag)
+    closed_acc = get_closed_acc()
+    reset_results = (
+        None, None, "", "", "", "", "No retrieval",
+        None, None, empty_xai, empty_xai, None, empty_xai,
+        empty_report, empty_report, None, *empty_rag,
+        *closed_acc, *closed_acc
+    )
 
     # --- CHECK 1: Is engine loaded? ---
     if inference_engine is None or LOADED_CONFIG is None:
@@ -263,6 +299,12 @@ def run_gui_inference(dataset_input, idx, model_key, use_rag, use_reflexion, pro
     try:
         dataset_path = DATASET_OPTIONS[dataset_input]["path"]
         dataset = load_data_source(dataset_path, split="test")
+
+        idx_int = int(idx)
+        if idx_int < 0 or idx_int >= len(dataset):
+            error_msg = f"⚠️ **Error:** Index {idx_int} is out of bounds.\nValid range: 0 to {len(dataset) - 1}."
+            return error_msg, *reset_results
+
         item = dataset[int(idx)]
         image = item['image'].convert("RGB")
         question = item['question']
@@ -348,7 +390,22 @@ def run_gui_inference(dataset_input, idx, model_key, use_rag, use_reflexion, pro
 
         # Success Return
         valid_status = get_status_msg(LOADED_CONFIG)
-        return valid_status, image, q, a, prediction_text, reflex_intermediate_output, retrieval_log, None, empty_xai, empty_xai, None, empty_xai, empty_report, empty_report, state_data, *rag_updates
+
+        # 1. Main Result: Always open on success
+        res_updates = get_open_acc()
+
+        # Reflexion: Open if enabled
+        ref_updates = get_open_acc() if use_reflexion else closed_acc
+
+        # RAG: Open if items were retrieved
+        rag_updates_acc = get_open_acc() if retrieved_ids else closed_acc
+
+        return (
+            valid_status, image, q, a, prediction_text, reflex_intermediate_output, retrieval_log,
+            None, None, empty_xai, empty_xai, None, empty_xai,
+            empty_report, empty_report, state_data, *rag_updates,
+            *ref_updates, *rag_updates_acc
+        )
 
     except Exception as e:
         import traceback
@@ -357,11 +414,14 @@ def run_gui_inference(dataset_input, idx, model_key, use_rag, use_reflexion, pro
 
 
 def run_xai_only(state_data):
-    global inference_engine
+    global inference_engine, LOADED_CONFIG
+
+    closed_acc = get_closed_acc()
 
     # Validation
     if not state_data:
-        return None, "⚠️ **Action Required:** Please run **Inference** first."
+        error_msg = "⚠️ **Action Required:** Please run **Inference** first."
+        return None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc
 
     image = state_data["image"]
     question = state_data["question"]
@@ -369,20 +429,33 @@ def run_xai_only(state_data):
 
     adapter = inference_engine.llm if hasattr(inference_engine, 'llm') else inference_engine
 
-    # 1. Visual XAI (6x6 Grid)
-    xai_img = None
+    # 1. Visual XAI
+    # --- METHOD 1: Qwen Attention (Intrinsic) ---
+    # Fast, checks internal weights. Only works for Qwen.
+    img_att = None
     try:
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        explainer = FastOcclusionExplainer(adapter)
-        # 6x6 Grid for good detail
-        mask = explainer.generate_heatmap(image, question, prediction_text, grid_size=6)
-        xai_img = apply_colormap(image, mask)
+        model_name = LOADED_CONFIG["model"]
+        if "qwen" in str(model_name).lower():
+            print("\n⚡ Running XAI-1: Intrinsic Attention...")
+            explainer_att = AttentionExplainer(adapter)
+            att_mask = explainer_att.generate_heatmap(image, question)
+            img_att = apply_colormap(image, att_mask)
     except Exception as e:
-        print(f"XAI Error: {e}")
-        xai_img = None  # Return None on error
+        print(f"⚠️ Attention XAI Failed: {e}")
+
+    # --- METHOD 2: Occlusion (Perturbation) ---
+    # Slower, but proves causality (removing this region breaks the answer).
+    img_occ = None
+    try:
+        print("🐢 Running XAI-2: Sliding Occlusion...")
+        explainer_occ = FastOcclusionExplainer(adapter)
+        occ_mask = explainer_occ.generate_heatmap(image, question, prediction_text, grid_size=8)
+        img_occ = apply_colormap(image, occ_mask)
+    except Exception as e:
+        print(f"⚠️ Occlusion XAI Failed: {e}")
 
     # 2. Visual Retrieval Counterfactual
+    print("🔄 Start Visual Retrieval Counterfactual")
     cf_visual_img = None
     cf_visual_rpt = ""
     try:
@@ -395,16 +468,18 @@ def run_xai_only(state_data):
     except Exception as e:
         cf_visual_rpt = f"Visual CF Failed: {e}"
 
-    # 3. oncept Analysis (BioMedCLIP)
+    # 3. Concept Analysis (BioMedCLIP)
     concept_rpt_zs = ""
     concept_rpt_nc = ""
     try:
         if hasattr(inference_engine, 'retriever'):
             c_explainer = ConceptExplainer(inference_engine)
             # Strategy A: Zero-Shot (Fixed Check)
+            print("🧠 Start Concept Activation Analysis")
             _, concept_rpt_zs = c_explainer.evaluate(image)
 
             # Strategy B: Neighbor Consensus (Discovery)
+            print("🧬 Start Neighbor-Based Concept Consensus")
             concept_rpt_nc = c_explainer.discover_concepts(image, question, k=50)
         else:
             concept_rpt_zs = "RAG disabled. Cannot run Concept Analysis."
@@ -413,7 +488,16 @@ def run_xai_only(state_data):
         concept_rpt_zs = f"Concept Analysis Failed: {e}"
         concept_rpt_nc = f"Concept Analysis Failed: {e}"
 
-    return xai_img, concept_rpt_zs, concept_rpt_nc, cf_visual_img, cf_visual_rpt
+    att_updates = get_open_acc() if img_att is not None else closed_acc
+    occ_updates = get_open_acc() if img_occ is not None else closed_acc
+    zs_updates = get_open_acc() if concept_rpt_zs and "RAG disabled" not in concept_rpt_zs else closed_acc
+    nc_updates = get_open_acc() if concept_rpt_nc and "RAG disabled" not in concept_rpt_nc else closed_acc
+    cf_updates = get_open_acc() if cf_visual_img is not None else closed_acc
+
+    return (
+        img_att, img_occ, concept_rpt_zs, concept_rpt_nc, cf_visual_img, cf_visual_rpt,
+        *att_updates, *occ_updates, *zs_updates, *nc_updates, *cf_updates
+    )
 
 
 def run_full_evaluation(state_data):
@@ -421,9 +505,11 @@ def run_full_evaluation(state_data):
     Runs BOTH the Reflexion Judge (Text) and the RAG Judge (Visual) sequentially.
     Returns two separate report strings.
     """
+    closed_acc = get_closed_acc()
+
     if not state_data:
         error_msg = "⚠️ **Action Required:** Please run **Inference** first."
-        return error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)]
+        return error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc
 
     # --- PART A: REFLEXION JUDGE (Gemini 2.5) ---
     reflexion_report = ""
@@ -490,8 +576,11 @@ def run_full_evaluation(state_data):
         rag_summary_text = f"## ❌ RAG Judge Error\n{str(e)}"
         rag_item_updates = [gr.update(value="") for _ in range(MAX_RAG_K)]
 
+    ref_judge_updates = get_open_acc() if "Reflexion disabled" not in reflexion_report else closed_acc
+    rag_judge_updates = get_open_acc() if "No RAG items" not in rag_summary_text else closed_acc
+
     # RETURN BOTH REPORTS
-    return reflexion_report, rag_summary_text, *rag_item_updates
+    return reflexion_report, rag_summary_text, *rag_item_updates, *ref_judge_updates, *rag_judge_updates
 
 
 def reset_system():
@@ -509,6 +598,8 @@ def reset_system():
     # 3. Garbage Collect
     gc.collect()
 
+    closed_acc = get_closed_acc()
+
     # 4. Prepare "Empty" Return Values
     # RAG items: 4 items per row (Row, Img, Txt, Verdict) * 10 rows
     empty_rag = [gr.update(visible=False), None, None, gr.update(visible=False)] * MAX_RAG_K
@@ -522,168 +613,185 @@ def reset_system():
         "",  # prediction_text
         "",  # reflex_intermediate_out
         "",  # retrieval_log_out
+
+        None,  # attention_out
         None,  # occlusion_out
         "",  # concept_rpt_zs_out
         "",  # concept_rpt_nc_out
         None,  # cf_visual_out
         "",  # cf_visual_report_out
+
         "",  # reflex_judge_report_out
         "",  # rag_judge_summary_out
         None,  # prediction_state
-        *empty_rag  # rag_atomic_components
+
+        *empty_rag,  # rag_atomic_components
+        *closed_acc, *closed_acc,  # Reflexion, RAG Items
+        *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,  # XAI (5 items)
+        *closed_acc, *closed_acc  # Judges (2 items)
     )
 
-
-# --- Gradio Interface ---
-# my_theme = gr.themes.Soft(
-#     text_size="lg",   # Increases font size
-#     spacing_size="lg" # Increases padding/clickable area
-# )
 
 with gr.Blocks(theme="Soft", title="GEN-MED") as demo:
     last_loaded_state = gr.State(None)
     prediction_state = gr.State()
+    icon_html = get_img_html("../assets/GENMED.png")
+    icon_html_live = get_img_html("../assets/GENMED_LIVE.png")
+    icon_html_xai = get_img_html("../assets/GENMED_XAI.png")
 
     with gr.Sidebar(position="left", width="25%"):
-        status = gr.Markdown("## ⚪ System Status: Idle")
-
-        with gr.Tab("Model"):
-            gr.Markdown("## ⚙️ Engine Setup")
-            model_select = gr.Dropdown(
-                choices=list(MODEL_OPTIONS.keys()),
-                label="Select Model / Adapter Configuration",
-                value=list(MODEL_OPTIONS.keys())[7]
-            )
-            prompt_input = gr.Radio(["Basic", "Instruct"], label="Prompt Style", value=CONFIG["PROMPT"])
-
-        with gr.Tab("Setting"):
-            gr.Markdown("## 🧩 Techniques (Toggles)")
-            rag_toggle = gr.Checkbox(label="Enable RAG", value=CONFIG["USE_RAG"])
-            reflexion_toggle = gr.Checkbox(label="Enable Reflexion", value=CONFIG["USE_REFLEXION"])
-
-            with gr.Group(visible=CONFIG["USE_RAG"]) as rag_settings_group:
-                with gr.Accordion("RAG Settings", open=True):
-                    k_slider = gr.Slider(1, MAX_RAG_K, value=CONFIG["RAG_K"], step=1, label="K (Neighbors)")
-                    a_slider = gr.Slider(0.0, 1.0, value=CONFIG["RAG_ALPHA"], label="Alpha (Text similarity) : 1-Alpha (Image similarity)")
-
-        with gr.Tab("Inference"):
-            gr.Markdown("## 🔍 Inference")
-
-            with gr.Row():
-                dataset_input = gr.Dropdown(["VQA-RAD", "SLAKE"], value="VQA-RAD", label="Dataset")
-                idx_input = gr.Number(
-                    value=0,
-                    label=f"Sample Index (0 - {DATASET_OPTIONS['VQA-RAD']['size'] - 1})",
-                    precision=0,
-                    minimum=0,
-                    maximum=DATASET_OPTIONS["VQA-RAD"]["size"] - 1
-                )
-
-            load_btn = gr.Button("🔄 Initialize / Reload Engine", variant="primary")
-            run_btn = gr.Button("🚀 Run Inference", variant="secondary")
-            xai_btn = gr.Button("⚡ Run XAI Analysis", variant="secondary")
-            judge_btn = gr.Button("⚖️ Run LLM as Judge Evaluation", variant="secondary")
-            reset_btn = gr.Button("⚠️ Reset System (Clear Memory)", variant="stop")
-
-    icon_html = get_img_html("../assets/GENMED_XAI.png")
-    gr.Markdown(f"# {icon_html} GEN-MED Dashboard")
-    gr.Markdown("---")
-    result_head, result_body = create_md_accordion("## 📊 Result Analysis", initial_visible=True)
-    # gr.Markdown("## 📊 Result Analysis")
-
-    with result_body:
+        gr.Markdown(f"# {icon_html}GEN-MED")
+        gr.Markdown("### Your personal medical specialist.")
         gr.Markdown("---")
-        with gr.Row(height=350):
-            with gr.Column(scale=1):
-                img_out = gr.Image(type="pil", show_label=False, height=350)
-            with gr.Column(scale=2):
-                with gr.Row(height=150):
-                    with gr.Column():
-                        gr.Markdown("### **Question**")
-                        gr.Markdown("---")
-                        question = gr.Markdown(height=150)
-                    with gr.Column():
-                        gr.Markdown("### **Ground Truth**")
-                        gr.Markdown("---")
-                        gt = gr.Markdown(height=150)
+        with gr.Column():
+            status = gr.Markdown("## ⚪ System Status: Idle", height=150, max_height=150)
 
+            with gr.Tab("Configuration Setting"):
+                gr.Markdown("## ⚙️ Engine Setup")
+                model_select = gr.Dropdown(
+                    choices=list(MODEL_OPTIONS.keys()),
+                    label="Select Model / Adapter Configuration",
+                    value=list(MODEL_OPTIONS.keys())[7],
+                    filterable=False
+                )
+                with gr.Accordion("Settings", open=False):
+                    prompt_input = gr.Radio(["Basic", "Instruct"], label="Prompt Style", value=CONFIG["PROMPT"])
+                    rag_toggle = gr.Checkbox(label="Enable RAG", value=CONFIG["USE_RAG"])
+                    reflexion_toggle = gr.Checkbox(label="Enable Reflexion", value=CONFIG["USE_REFLEXION"])
+
+                with gr.Group(visible=CONFIG["USE_RAG"]) as rag_settings_group:
+                    with gr.Accordion("RAG Settings", open=False):
+                        k_slider = gr.Slider(1, MAX_RAG_K, value=CONFIG["RAG_K"], step=1, label="K (Neighbors)")
+                        a_slider = gr.Slider(0.0, 1.0, value=CONFIG["RAG_ALPHA"], label="Alpha (Text similarity) : 1-Alpha (Image similarity)")
+
+                load_btn = gr.Button("🔄 Initialize / Reload Engine", variant="primary")
+                reset_btn = gr.Button("⚠️ Reset System (Clear Memory)", variant="stop")
+
+            with gr.Tab("Inference"):
+                gr.Markdown("## 🔍 Inference")
+
+                with gr.Accordion("Database Inference", open=True):
+                    dataset_input = gr.Dropdown(["VQA-RAD", "SLAKE"], value="VQA-RAD", label="Dataset")
+                    idx_input = gr.Number(
+                        value=0,
+                        label=f"Sample Index (0 - {DATASET_OPTIONS['VQA-RAD']['size'] - 1})",
+                        precision=0,
+                        minimum=0,
+                    )
+
+                run_btn = gr.Button("🚀 Run Inference", variant="secondary")
+                xai_btn = gr.Button("⚡ Run XAI Analysis", variant="secondary")
+                judge_btn = gr.Button("⚖️ Run LLM as Judge Evaluation", variant="secondary")
+
+    with gr.Tab("Live Diagnostic"):
+        gr.Markdown(f"## {icon_html_live} Live Diagnostic ChatBot")
+        gr.Markdown("---")
+        with gr.Column():
+            gr.Markdown(f"## {icon_html_xai} XAI Dashboard")
+            gr.Markdown("---")
+
+    with gr.Tab("Database Dashboard"):
+        gr.Markdown(f"## {icon_html_xai} XAI Dashboard (DATABASE)")
+        # gr.Markdown("## 📊 Result Analysis")
+        gr.Markdown("---")
+        with gr.Column():
+            with gr.Row(height=350):
+                with gr.Column(scale=1):
+                    img_out = gr.Image(type="pil", show_label=False, height=350)
+                with gr.Column(scale=2):
+                    with gr.Row(height=150):
+                        with gr.Column():
+                            gr.Markdown("### **Question**")
+                            gr.Markdown("---")
+                            question = gr.Markdown(height=150, max_height=150)
+                        with gr.Column():
+                            gr.Markdown("### **Ground Truth**")
+                            gr.Markdown("---")
+                            gt = gr.Markdown(height=150, max_height=150)
+
+                    gr.Markdown("---")
+
+                    with gr.Row(height=200):
+                        with gr.Column():
+                            gr.Markdown("### **Prediction**")
+                            gr.Markdown("---")
+                            prediction = gr.Markdown(height=200, max_height=200)
+
+            with gr.Tab("Deep Analysis (XAI)"):
+                gr.Markdown("## 🔬 Comprehensive Analysis")
+                gr.Markdown("---")
+                with gr.Row():
+                    with gr.Column():
+                        att_head, att_body, att_state, att_btn = create_md_accordion("### 👁️ Internal Attention (Intrinsic)", initial_visible=False)
+                        with att_body:
+                            attention_out = gr.Image(type="pil", height=350, show_label=False)
+                    with gr.Column():
+                        occ_head, occ_body, occ_state, occ_btn = create_md_accordion("### 👁️ Causal Occlusion (Perturbation)", initial_visible=False)
+                        with occ_body:
+                            occlusion_out = gr.Image(type="pil", height=350, show_label=False)
+
+                with gr.Row():
+                    with gr.Column():
+                        cf_head, cf_body, cf_state, cf_btn = create_md_accordion("### 📜️ Visual Counterfactual (Similar Opposite)", initial_visible=False)
+                        with cf_body:
+                            with gr.Row():
+                                with gr.Column(scale=1):
+                                    cf_visual_out = gr.Image(type="pil", height=350, label="Nearest 'Opposite' Case")
+                                with gr.Column(scale=2):
+                                    cf_visual_report_out = gr.Markdown(container=True)
+
+                with gr.Row():
+                    with gr.Column():
+                        zs_head, zs_body, zs_state, zs_btn = create_md_accordion("### 📝 Concept Analysis (Zero-Shot)", initial_visible=False)
+                        with zs_body:
+                            concept_rpt_zs_out = gr.Markdown(container=True)
+                    with gr.Column():
+                        nc_head, nc_body, nc_state, nc_btn = create_md_accordion("### 📝 Concept Analysis (Neighbour-Based)", initial_visible=False)
+                        with nc_body:
+                            concept_rpt_nc_out = gr.Markdown(container=True)
+
+            with gr.Tab("Deep Analysis (RAG)"):
+                gr.Markdown("## 📂 Visual RAG Retrieval Items & Evaluation")
+                gr.Markdown("---")
+                retrieval_log_out = gr.Textbox(show_label=False, lines=1, max_lines=1)
+
+                rag_item_head, rag_item_body, rag_item_state, rag_item_btn = create_md_accordion("### 🗃️ Retrieved Item List", initial_visible=False)
+                with rag_item_body:
+                    rag_atomic_components = []
+                    rag_verdict_boxes = []
+
+                    for i in range(MAX_RAG_K):
+                        with gr.Row(visible=False, variant="panel") as r:
+                            # Column 1: Image
+                            with gr.Column(scale=1):
+                                r_img = gr.Image(type="pil", label=f"Retrieved Item {i + 1}", height=250)
+
+                            # Column 2: Text Metadata
+                            with gr.Column(scale=1):
+                                r_txt = gr.Markdown(height=250, label="Metadata")
+
+                            # Column 3: The Verdict Card (Populated by JSON)
+                            with gr.Column(scale=1):
+                                r_eval = gr.Markdown()
+
+                        rag_atomic_components.extend([r, r_img, r_txt, r_eval])
+                        rag_verdict_boxes.append(r_eval)
+
+                rag_rpt_head, rag_rpt_body, rag_rpt_state, rag_rpt_btn = create_md_accordion("### 📋 AI Judge Assessment (Gemini 3 Flash) - Overall Retrieval Health", initial_visible=False)
+                with rag_rpt_body:
+                    rag_judge_summary_out = gr.Markdown(container=True)
+
+            with gr.Tab("Deep Analysis (Reflexion)"):
+                gr.Markdown("## 🧠 Reflexion Process & Evaluation")
                 gr.Markdown("---")
 
-                with gr.Row(height=200):
-                    with gr.Column():
-                        gr.Markdown("### **Prediction**")
-                        gr.Markdown("---")
-                        prediction = gr.Markdown(height=200)
+                ref_res_head, ref_res_body, ref_res_state, ref_res_btn = create_md_accordion("### 📝 Internal Monologue (Draft & Critique)", initial_visible=False)
+                with ref_res_body:
+                    reflex_intermediate_out = gr.Markdown(container=True)
 
-        with gr.Tab("Deep Analysis (XAI)"):
-            gr.Markdown("## 🔬 Comprehensive Analysis")
-            gr.Markdown("---")
-            with gr.Row():
-                with gr.Column():
-                    occ_head, occ_body = create_md_accordion("### 👁️ Occlusion Sensitivity", initial_visible=False)
-                    with occ_body:
-                        occlusion_out = gr.Image(type="pil", height=350, show_label=False)
-                with gr.Column():
-                    cav_zs_head, cav_zs_body = create_md_accordion("### 📝 Concept Analysis (Zero-Shot)", initial_visible=False)
-                    with cav_zs_body:
-                        concept_rpt_zs_out = gr.Markdown(container=True)
-                with gr.Column():
-                    cav_nc_head, cav_nc_body = create_md_accordion("### 📝 Concept Analysis (Neighbour-Based)", initial_visible=False)
-                    with cav_nc_body:
-                        concept_rpt_nc_out = gr.Markdown(container=True)
-
-            with gr.Row():
-                with gr.Column():
-                    cfv_head, cfv_body = create_md_accordion("### 📜️ Visual Counterfactual (Similar Opposite)", initial_visible=False)
-                    with cfv_body:
-                        with gr.Row():
-                            with gr.Column(scale=1):
-                                cf_visual_out = gr.Image(type="pil", height=350, label="Nearest 'Opposite' Case")
-                            with gr.Column(scale=2):
-                                cf_visual_report_out = gr.Markdown(container=True)
-
-        with gr.Tab("Deep Analysis (RAG)"):
-            gr.Markdown("## 📂 Visual RAG Retrieval Items & Evaluation")
-            gr.Markdown("---")
-            retrieval_log_out = gr.Textbox(show_label=False, lines=1, max_lines=1)
-
-            rag_item_head, rag_item_body = create_md_accordion("### 🗃️ Retrieved Item List", initial_visible=False)
-            with rag_item_body:
-                rag_atomic_components = []
-                rag_verdict_boxes = []
-
-                for i in range(MAX_RAG_K):
-                    with gr.Row(visible=False, variant="panel") as r:
-                        # Column 1: Image
-                        with gr.Column(scale=1):
-                            r_img = gr.Image(type="pil", label=f"Retrieved Item {i + 1}", height=250)
-
-                        # Column 2: Text Metadata
-                        with gr.Column(scale=1):
-                            r_txt = gr.Markdown(height=250, label="Metadata")
-
-                        # Column 3: The Verdict Card (Populated by JSON)
-                        with gr.Column(scale=1):
-                            r_eval = gr.Markdown()
-
-                    rag_atomic_components.extend([r, r_img, r_txt, r_eval])
-                    rag_verdict_boxes.append(r_eval)
-
-            rag_report_head, rag_report_body = create_md_accordion("### 📋 AI Judge Assessment (Gemini 3 Flash) - Overall Retrieval Health", initial_visible=False)
-            with rag_report_body:
-                rag_judge_summary_out = gr.Markdown(container=True)
-
-        with gr.Tab("Deep Analysis (Reflexion)"):
-            gr.Markdown("## 🧠 Reflexion Process & Evaluation")
-            gr.Markdown("---")
-
-            reflex_res_head, reflex_res_body = create_md_accordion("### 📝 Internal Monologue (Draft & Critique)", initial_visible=False)
-            with reflex_res_body:
-                reflex_intermediate_out = gr.Markdown(container=True)
-
-            reflex_report_head, reflex_report_body = create_md_accordion("### 📋 AI Judge Assessment (Gemini 2.5 Flash Lite)", initial_visible=False)
-            with reflex_report_body:
-                reflex_judge_report_out = gr.Markdown(container=True)
+                ref_rpt_head, ref_rpt_body, ref_rpt_state, ref_rpt_btn = create_md_accordion("### 📋 AI Judge Assessment (Gemini 2.5 Flash Lite)", initial_visible=False)
+                with ref_rpt_body:
+                    reflex_judge_report_out = gr.Markdown(container=True)
 
     # Bindings
     all_inputs_and_buttons = [
@@ -705,9 +813,18 @@ with gr.Blocks(theme="Soft", title="GEN-MED") as demo:
         return [gr.update(interactive=True)] * len(all_inputs_and_buttons)
 
     load_btn.click(
+        fn=lock_interface,
+        inputs=None,
+        outputs=all_inputs_and_buttons,
+        queue=False
+    ).then(
         load_engine,
         inputs=[model_select, rag_toggle, reflexion_toggle, prompt_input, k_slider, a_slider],
         outputs=[status, last_loaded_state, load_btn]
+    ).then(
+        fn=unlock_interface,
+        inputs=None,
+        outputs=all_inputs_and_buttons
     )
 
     run_btn.click(
@@ -718,8 +835,13 @@ with gr.Blocks(theme="Soft", title="GEN-MED") as demo:
     ).then(
         run_gui_inference,
         inputs=[dataset_input, idx_input, model_select, rag_toggle, reflexion_toggle, prompt_input, k_slider, a_slider],
-        outputs=[status, img_out, question, gt, prediction, reflex_intermediate_out, retrieval_log_out, occlusion_out, concept_rpt_zs_out, concept_rpt_nc_out,
-                 cf_visual_out, cf_visual_report_out, reflex_judge_report_out, rag_judge_summary_out, prediction_state, *rag_atomic_components]
+        outputs=[
+            status, img_out, question, gt, prediction, reflex_intermediate_out, retrieval_log_out,
+            attention_out, occlusion_out, concept_rpt_zs_out, concept_rpt_nc_out, cf_visual_out, cf_visual_report_out,
+            reflex_judge_report_out, rag_judge_summary_out, prediction_state, *rag_atomic_components,
+            ref_res_body, ref_res_state, ref_res_btn,
+            rag_item_body, rag_item_state, rag_item_btn
+        ]
     ).then(
         fn=unlock_interface,
         inputs=None,
@@ -734,7 +856,14 @@ with gr.Blocks(theme="Soft", title="GEN-MED") as demo:
     ).then(
         run_xai_only,
         inputs=[prediction_state],
-        outputs=[occlusion_out, concept_rpt_zs_out, concept_rpt_nc_out, cf_visual_out, cf_visual_report_out]
+        outputs=[
+            attention_out, occlusion_out, concept_rpt_zs_out, concept_rpt_nc_out, cf_visual_out, cf_visual_report_out,
+            att_body, att_state, att_btn,
+            occ_body, occ_state, occ_btn,
+            zs_body, zs_state, zs_btn,
+            nc_body, nc_state, nc_btn,
+            cf_body, cf_state, cf_btn
+        ]
     ).then(
         fn=unlock_interface,
         inputs=None,
@@ -749,7 +878,11 @@ with gr.Blocks(theme="Soft", title="GEN-MED") as demo:
     ).then(
         run_full_evaluation,
         inputs=[prediction_state],
-        outputs=[reflex_judge_report_out, rag_judge_summary_out, *rag_verdict_boxes]
+        outputs=[
+            reflex_judge_report_out, rag_judge_summary_out, *rag_verdict_boxes,
+            ref_rpt_body, ref_rpt_state, ref_rpt_btn,
+            rag_rpt_body, rag_rpt_state, rag_rpt_btn
+        ]
     ).then(
         fn=unlock_interface,
         inputs=None,
@@ -765,8 +898,20 @@ with gr.Blocks(theme="Soft", title="GEN-MED") as demo:
         fn=reset_system,
         inputs=None,
         # Updates ALL output visual components
-        outputs=[status, img_out, question, gt, prediction, reflex_intermediate_out, retrieval_log_out, occlusion_out, concept_rpt_zs_out, concept_rpt_nc_out,
-                 cf_visual_out, cf_visual_report_out, reflex_judge_report_out, rag_judge_summary_out, prediction_state, *rag_atomic_components]
+        outputs=[
+            status, img_out, question, gt, prediction, reflex_intermediate_out, retrieval_log_out,
+            attention_out, occlusion_out, concept_rpt_zs_out, concept_rpt_nc_out, cf_visual_out, cf_visual_report_out,
+            reflex_judge_report_out, rag_judge_summary_out, prediction_state, *rag_atomic_components,
+            ref_res_body, ref_res_state, ref_res_btn,
+            rag_item_body, rag_item_state, rag_item_btn,
+            att_body, att_state, att_btn,
+            occ_body, occ_state, occ_btn,
+            zs_body, zs_state, zs_btn,
+            nc_body, nc_state, nc_btn,
+            cf_body, cf_state, cf_btn,
+            ref_rpt_body, ref_rpt_state, ref_rpt_btn,
+            rag_rpt_body, rag_rpt_state, rag_rpt_btn
+        ]
     ).then(
         fn=unlock_interface,  # Force Unlock everything
         inputs=None,
@@ -824,21 +969,26 @@ with gr.Blocks(theme="Soft", title="GEN-MED") as demo:
             outputs=[load_btn, status]
         )
 
+    def update_index_limits(dataset_name):
+        # 1. Get dataset info safely
+        ds_info = DATASET_OPTIONS.get(dataset_name, {})
 
-    def update_dataset_info(dataset_name):
-        size = DATASET_OPTIONS.get(dataset_name, {}).get("size", 1)
+        # 2. Get size (Default to 100 if missing to prevent crash)
+        total_size = ds_info.get("size", 100)
+        max_index = total_size - 1
+
+        # 3. Return the UI update
         return gr.update(
-            maximum=size - 1,
-            label=f"Sample Index (0 - {size - 1})",
-            value=0
+            label=f"Sample Index (0 - {max_index})",
+            value=0,
+            interactive=True
         )
 
     dataset_input.change(
-        fn=update_dataset_info,
+        fn=update_index_limits,
         inputs=dataset_input,
         outputs=idx_input
     )
-
 
     def toggle_rag_visibility(is_checked):
         return gr.update(visible=is_checked)

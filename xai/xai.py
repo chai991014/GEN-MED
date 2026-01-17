@@ -1,4 +1,5 @@
 import torch
+import os
 import numpy as np
 import cv2
 from tqdm import tqdm
@@ -7,6 +8,7 @@ from scipy.ndimage import gaussian_filter
 import google.generativeai as genai
 import json
 import re
+import csv
 from collections import Counter
 
 
@@ -21,7 +23,7 @@ class FastOcclusionExplainer:
         self.adapter = adapter
         self.model = adapter.model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.batch_size = 1  # Keep at 1 to prevent VRAM lag
+        self.batch_size = 64  # Keep at 1 to prevent VRAM lag
 
     def generate_heatmap(self, image, question, target_answer, grid_size=6):
         """
@@ -32,6 +34,20 @@ class FastOcclusionExplainer:
         # 1. Clean Memory
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+        max_dim = 768
+        w, h = image.size
+
+        # Only resize if the image is actually larger than the limit
+        if max(w, h) > max_dim:
+            # Calculate new size preserving aspect ratio
+            ratio = max_dim / max(w, h)
+            new_w = int(w * ratio)
+            new_h = int(h * ratio)
+            image = image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            print(f"📉 Resized image for XAI: {w}x{h} -> {new_w}x{new_h}")
+        else:
+            image = image.copy()
 
         image = image.convert("RGB")
         W, H = image.size
@@ -46,13 +62,14 @@ class FastOcclusionExplainer:
                 target_ids = self.adapter.tokenizer(target_answer, add_special_tokens=False).input_ids
 
         if len(target_ids) == 0:
-            return np.zeros((H, W), dtype=np.float32)
+            return np.zeros((h, w), dtype=np.float32)
         target_token_id = target_ids[0]
 
         # 3. Generate 6x6 Grid
-        print(f"⚡ Running Balanced Grid ({grid_size}x{grid_size})...")
-        step_x = int(W / grid_size)
-        step_y = int(H / grid_size)
+        print(f"Running Balanced Grid ({grid_size}x{grid_size})...")
+        import math
+        step_x = int(math.ceil(W / grid_size))
+        step_y = int(math.ceil(H / grid_size))
 
         patches = []
         coords = []
@@ -61,11 +78,20 @@ class FastOcclusionExplainer:
         # Generate Baseline
         baseline_score = self._run_inference_single(image, question, target_token_id)
 
-        for y in range(0, H, step_y):
-            for x in range(0, W, step_x):
+        for i in range(grid_size):
+            for j in range(grid_size):
+                # Calculate coordinates based on index
+                y = i * step_y
+                x = j * step_x
+
+                # Handle edge cases (don't go past image bounds)
+                y_end = min(y + step_y, H)
+                x_end = min(x + step_x, W)
+
+                # Copy & Occlude
                 temp_img = img_np.copy()
-                # Draw gray box
-                cv2.rectangle(temp_img, (x, y), (x + step_x, y + step_y), (127, 127, 127), -1)
+                cv2.rectangle(temp_img, (x, y), (x_end, y_end), (127, 127, 127), -1)
+
                 patches.append(Image.fromarray(temp_img))
                 coords.append((x, y))
 
@@ -94,6 +120,7 @@ class FastOcclusionExplainer:
 
         heatmap = gaussian_filter(heatmap, sigma=dynamic_sigma)
         heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+        heatmap = cv2.resize(heatmap, (w, h))
 
         return heatmap
 
@@ -127,6 +154,7 @@ class FastOcclusionExplainer:
             prob = torch.softmax(logits, dim=-1)[target_token_id].item()
             return prob
 
+
 def apply_colormap(image, mask):
     if mask is None: return image
     mask[mask < 0.2] = 0
@@ -140,14 +168,168 @@ def apply_colormap(image, mask):
         return image
 
 
-class RetrievalCounterfactual:
+class AttentionExplainer:
     """
-    Generates Visual Counterfactuals using the RAG database.
-    It finds a 'Negative' example (Healthy) that is visually similar to the 'Positive' input.
+    Extracts 'Intrinsic Attention' weights from the last transformer layer
+    during a single forward pass.
     """
 
-    def __init__(self, inference_engine):
+    def __init__(self, model_adapter):
+        self.model = model_adapter.model
+        self.processor = model_adapter.processor
+        self.device = self.model.device
+
+    def generate_heatmap(self, image, question, original_pred=None, grid_size=None):
+        # Note: 'original_pred' and 'grid_size' are unused here but kept for API compatibility
+
+        # 1. Prepare Inputs (Manually to capture grid info)
+        messages = [
+            {"role": "user", "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": question}
+            ]}
+        ]
+
+        # Apply chat template
+        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+        # Process inputs (This handles Qwen's dynamic resizing)
+        inputs = self.processor(
+            text=[text],
+            images=[image],
+            padding=True,
+            return_tensors="pt"
+        ).to(self.device)
+
+        # 2. Forward Pass with Attention Capture
+        # We only need to generate 1 token to see what the model is "looking at" to start its answer.
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=1,
+                output_attentions=True,
+                return_dict_in_generate=True
+            )
+
+        # 3. Extract Attention from the Last Layer
+        # Structure: outputs.attentions[generated_token_step][layer_index]
+        # We take: First generated token -> Last Layer
+        # Shape: (Batch, Heads, Query_Len, Key_Len)
+        last_layer_att = outputs.attentions[0][-1]
+
+        # Average across all attention heads to get a robust signal
+        # Shape: (Batch, Key_Len) -> We squeeze batch & query dims
+        att_map = last_layer_att.mean(dim=1)[0, -1, :]
+
+        # 4. Identify Visual Tokens in the Sequence
+        # Qwen2-VL delimits images with <|vision_start|> and <|vision_end|>
+        input_ids = inputs.input_ids[0]
+
+        # Dynamic Token Lookup (Safer than hardcoding IDs)
+        try:
+            vision_start_id = self.processor.tokenizer.convert_tokens_to_ids("<|vision_start|>")
+            vision_end_id = self.processor.tokenizer.convert_tokens_to_ids("<|vision_end|>")
+        except:
+            # Fallback for some Qwen versions
+            vision_start_id = 151653
+            vision_end_id = 151654
+
+        try:
+            # Find indices
+            start_idx = (input_ids == vision_start_id).nonzero(as_tuple=True)[0][0].item()
+            end_idx = (input_ids == vision_end_id).nonzero(as_tuple=True)[0][0].item()
+
+            # Extract the raw attention scores for image tokens ONLY
+            # We skip the start/end tags themselves
+            image_att = att_map[start_idx + 1: end_idx]
+
+            # 5. Reshape based on Qwen's Dynamic Grid
+            # The processor stores the exact grid size used (Time, Height, Width)
+            # Shape: Tensor([1, h, w])
+            grid_thw = inputs['image_grid_thw'][0]
+            h, w = grid_thw[1].item(), grid_thw[2].item()
+
+            actual_tokens = image_att.shape[0]
+
+            # --- SCENARIO A: 2x2 Pooling (Standard Qwen3-VL) ---
+            # The LLM sees (H/2) * (W/2) tokens.
+            # Example: Grid 1408 (44x32) -> Actual 352 (22x16)
+            if actual_tokens == (h // 2) * (w // 2):
+                print(f"Detected 2x2 Pooling: {h}x{w} -> {h//2}x{w//2}")
+                heatmap = image_att.view(h // 2, w // 2).float().cpu().numpy()
+
+            # --- SCENARIO B: Exact Match (No Pooling) ---
+            elif actual_tokens == h * w:
+                heatmap = image_att.view(h, w).float().cpu().numpy()
+
+            # --- SCENARIO C: Fallback (Aspect Ratio Preservation) ---
+            # If Qwen3 or other variants use different stride, we calculate shape mathematically
+            else:
+                print(f"⚠️ Grid mismatch: Grid={h}x{w} ({h*w}), Actual={actual_tokens}. Attempting aspect-ratio reshape.")
+                # Preserve aspect ratio: w/h = ratio
+                ratio = w / h
+                # h_new * w_new = actual_tokens  =>  h_new^2 * ratio = actual_tokens
+                h_new = int(np.sqrt(actual_tokens / ratio))
+                w_new = int(actual_tokens / h_new)
+
+                if h_new * w_new == actual_tokens:
+                    heatmap = image_att.view(h_new, w_new).float().cpu().numpy()
+                else:
+                    # Final safety net: Square reshape
+                    side = int(np.sqrt(actual_tokens))
+                    heatmap = image_att[:side * side].view(side, side).float().cpu().numpy()
+
+            # 6. Normalize & Resize to Original Image
+            heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+
+            # Resize heatmap to match original image dimensions
+            original_w, original_h = image.size
+            heatmap = cv2.resize(heatmap, (original_w, original_h))
+
+            return heatmap
+
+        except Exception as e:
+            print(f"❌ Attention Map Error: {e}")
+            # Return empty mask on failure
+            return np.zeros((image.size[1], image.size[0]))
+
+
+class RetrievalCounterfactual:
+    """
+    Generates Visual Counterfactuals using the XAI Super-KB.
+    Enforces 'Topic Consistency' to ensure the retrieved question
+    is relevant to the user's question.
+    """
+
+    def __init__(self, inference_engine, csv_path="medical_concepts_stats_processed.csv"):
         self.engine = inference_engine  # This gives access to the RAG retriever
+        self.vocab = set()
+
+        # --- LOAD VOCABULARY FROM CSV ---
+        # We load the valid medical terms to know what counts as a "Topic".
+        if os.path.exists(csv_path):
+            try:
+                with open(csv_path, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        term = row.get("Concept", "").strip().lower()
+                        if term and len(term) > 2:
+                            self.vocab.add(term)
+            except Exception as e:
+                print(f"⚠️ Counterfactual Vocab Error: {e}")
+        else:
+            # Fallback: Basic set if CSV is missing
+            self.vocab = {"pneumonia", "opacity", "effusion", "mass", "nodule", "fracture", "edema", "cardiomegaly",
+                          "atelectasis"}
+
+    def _extract_keywords(self, text):
+        """
+        Extracts only the medically relevant words present in our CSV.
+        This automatically filters out noise like "view", "image", "side".
+        """
+        words = re.findall(r'\b[a-z]{3,}\b', text.lower())
+        # Filter: Only keep words that exist in our Curated CSV
+        return {w for w in words if w in self.vocab}
 
     def find_counterfactual(self, image, original_question, original_prediction_text):
         """
@@ -155,7 +337,7 @@ class RetrievalCounterfactual:
         2. Search the RAG database (Knowledge Base).
         3. Filter for an image where the Ground Truth is OPPOSITE to the current prediction.
         """
-        # Safety check for RAG
+        # Safety check for RAG & Medical Vocabulary Dictionary
         if not hasattr(self.engine, 'xai_retriever') or self.engine.xai_retriever is None:
             return None, "XAI Retrieval module not active. Enable RAG to use Retrieval Counterfactuals."
 
@@ -164,51 +346,46 @@ class RetrievalCounterfactual:
 
         # 1. Retrieve top 10 similar images
         # We need more candidates (k=10) to increase odds of finding an OPPOSITE case
-        candidates = retriever.retrieve(original_question, image, k=20, alpha=0.5)
+        candidates = retriever.retrieve(original_question, image, k=50, alpha=0.6)
 
         # 2. Heuristic: Determine the 'target' opposite label
         # If prediction is "Yes", we want a "No" (and vice versa)
         clean_pred = original_prediction_text.lower().strip()
         is_binary_pred = clean_pred in ["yes", "no"]
 
+        # Extract Core Concept from User Question (e.g. "Tumor")
+        user_topic_keywords = self._extract_keywords(original_question)
+
         cf_item = None
 
         # 3. Search Loop
         for cand in candidates:
+            cand_q = str(cand['question']).lower()
             cand_ans = str(cand['answer']).lower().strip()
 
-            # --- SCENARIO A: Binary Prediction (Yes/No) ---
+            # 2. Extract Core Concept from Neighbor
+            cand_topic_keywords = self._extract_keywords(cand_q)
+
+            # 3. STRICT TOPIC MATCHING
+            # If user has medical concepts, the neighbor MUST share at least one.
+            # This prevents matching "Tumor" with "Effusion" just because both are 'No'.
+            if user_topic_keywords and not user_topic_keywords.intersection(cand_topic_keywords):
+                continue
+
+            # 4. Check for Contrast (Opposite Answer)
             if is_binary_pred:
-                # We strictly want the OPPOSITE answer
-                target_gt = "no" if clean_pred == "yes" else "yes"
-                if cand_ans == target_gt:
+                target = "no" if clean_pred == "yes" else "yes"
+                if cand_ans == target:
+                    cf_item = cand
+                    break
+            else:
+                if cand_ans != clean_pred and cand_ans not in clean_pred and clean_pred not in cand_ans:
                     cf_item = cand
                     break
 
-            # --- SCENARIO B: Open-Ended Prediction (e.g., "Pneumonia") ---
-            else:
-                # We want a case that is visually similar but has a DIFFERENT answer.
-
-                # Rule 1: It cannot be the exact same answer (That's a supporting example, not a CF)
-                if cand_ans == clean_pred:
-                    continue
-
-                # Rule 2: It should not be a "subset" string (e.g. "left lung" vs "lung")
-                # This avoids weak counterfactuals where the difference is just specificity.
-                if cand_ans in clean_pred or clean_pred in cand_ans:
-                    continue
-
-                # Rule 3: Ignore generic/unhelpful answers if the prediction was specific
-                if cand_ans in ["chest x-ray", "pa", "ap", "film"]:
-                    continue
-
-                # If passed checks, we found a "Contrast Case"
-                cf_item = cand
-                break
-
         # 4. Handle "No Counterfactual Found"
         if not cf_item:
-            msg = "Could not find a valid counterfactual (all retrieved neighbors had similar answers to your prediction)."
+            msg = f"No valid counterfactual found (Checked 50 neighbors, none matched topic '{list(user_topic_keywords)}' with opposite answer)."
             return None, msg
 
         # 5. Fetch Image & Format Report
@@ -218,12 +395,14 @@ class RetrievalCounterfactual:
         except:
             return None, "Error loading counterfactual image."
 
-        return cf_image, f"""
+        report = f"""
         ### 🔄 Visual Counterfactual Found
         **Analysis:**
         The model predicted **'{original_prediction_text}'**.
-        To verify this, we retrieved a visually similar historical case where the Ground Truth was **'{cf_item['answer']}'**.
-
+        To verify this, we retrieved a visually similar historical case that:
+        1.  **Matches the Topic:** Both questions discuss *{list(user_topic_keywords.intersection(cand_topic_keywords))}*.
+        2.  **Has Opposite Outcome:** The ground truth was **'{cf_item['answer']}'**.
+        ---
         **Similar Historical Case:**
         - **Question:** {cf_item['question']}
         - **Answer:** {cf_item['answer']}
@@ -231,13 +410,33 @@ class RetrievalCounterfactual:
         *If the model is robust, it should visually distinguish the pathology in the Input vs. the Healthy Counterfactual.*
         """
 
+        return cf_image, report
+
 
 class ConceptExplainer:
     """
     Handles Concept-Based Explanations using two strategies:
-    1. Zero-Shot Activation (Fixed List)
-    2. Neighbor-Based Consensus (Open-Ended Discovery)
+    1. Zero-Shot Activation (Fixed List): Checks image against fixed medical terms.
+    2. Neighbor-Based Consensus (Open-Ended Discovery): Dynamically finds concepts from RAG neighbors.
     """
+
+    # Standard CheXpert-style list
+    CONCEPTS = [
+        "No Finding",
+        "Enlarged Cardiomediastinum",
+        "Cardiomegaly",
+        "Lung Opacity",
+        "Lung Lesion",
+        "Edema",
+        "Consolidation",
+        "Pneumonia",
+        "Atelectasis",
+        "Pneumothorax",
+        "Pleural Effusion",
+        "Pleural Other",
+        "Fracture",
+        "Support Devices"
+    ]
 
     def __init__(self, inference_engine):
         # We need the XAI retriever (BioMedCLIP) for encoding and searching
@@ -250,9 +449,9 @@ class ConceptExplainer:
         else:
             self.model = None
 
-    def evaluate(self, image, concepts=None):
+    def evaluate(self, image, concepts=None, csv_path="medical_concepts_stats_processed.csv"):
         """
-        Method 1: Zero-Shot Concept Activation.
+        Method 1: Zero-Shot Concept Activation (Direct CSV Load).
         Uses BioMedCLIP to measure the similarity between the image and high-level
         medical concepts. This satisfies the 'Concept-based Explanation' rubric.
         """
@@ -261,18 +460,33 @@ class ConceptExplainer:
 
         if concepts is None:
             # Default medical concepts to test against
-            concepts = [
-                "Normal Chest X-Ray",
-                "Pleural Effusion",
-                "Pneumonia",
-                "Consolidation",
-                "Edema",
-                "Atelectasis",
-                "Cardiomegaly",
-                "Pneumothorax",
-                "Fracture",
-                "Support Devices"
-            ]
+            concepts = []
+            # --- DIRECT LOAD FROM CURATED CSV ---
+            if os.path.exists(csv_path):
+                try:
+                    with open(csv_path, "r", encoding="utf-8") as f:
+                        reader = csv.DictReader(f)
+                        raw_candidates = []
+
+                        for row in reader:
+                            term = row.get("Concept", "").strip()
+                            if term:  # Only check if not empty
+                                raw_candidates.append(term.title())
+
+                except Exception as e:
+                    print(f"⚠️ CSV Error: {e}")
+
+            existing_set = set(c.lower() for c in raw_candidates)
+
+            for addon in self.CONCEPTS:
+                if addon.lower() not in existing_set:
+                    raw_candidates.append(addon)
+
+            concepts = raw_candidates
+
+            # If CSV is missing or empty, use this standard CheXpert-style list
+            if not concepts:
+                concepts = self.CONCEPTS
 
         # 1. Process Image
         image_input = self.processor(image).unsqueeze(0).to(self.device)
@@ -294,92 +508,94 @@ class ConceptExplainer:
             scores = similarity[0].cpu().numpy()
 
         # 4. Format Output
-        results = sorted(zip(concepts, scores), key=lambda x: x[1], reverse=True)
+        all_results = sorted(zip(concepts, scores), key=lambda x: x[1], reverse=True)
+        results = all_results[:10]
 
         # Create a Bar Chart text representation
         report = "### 🧠 Concept Activation Analysis (BioMedCLIP)\n"
+        if os.path.exists(csv_path):
+            report += f"Scanned **{len(concepts)} concepts** from `{csv_path}` and CheXpert concept list. Showing Top 10 activations.\n\n"
         report += "This analysis measures which high-level medical concepts are most activated by this image.\n\n"
 
+        has_output = False
         for concept, score in results:
+            # Show anything with > 1% activation
+            if score < 0.01:
+                continue
             bar_len = int(score * 20)
             bar = "█" * bar_len + "░" * (20 - bar_len)
             report += f"- **{concept}**:\n"
             report += f"`{bar}` ({score * 100:.1f}%)\n"
+            has_output = True
+
+        if not has_output:
+            report += "No concept activated. (0% Activation on all concepts)"
 
         return results, report
 
-    def discover_concepts(self, image, question, k=30):
+    def discover_concepts(self, image, question, k=30, csv_path="medical_concepts_stats_processed.csv"):
         """
-        Method 2: Neighbor-Based Concept Consensus.
-        Retrieves k similar cases and extracts the most common keywords (concepts)
+        Method 2: Neighbor-Based Concept Consensus (Dynamic CSV-Driven).
+        Retrieves k similar cases and extracts curated CSV file (concepts)
         from their Ground Truth answers.
         """
         if not self.model:
             return "XAI Retrieval module not active."
 
-        # 1. Retrieve Neighbors
+        # 1. Load Vocabulary from CSV
+        # We build a set of valid terms to look for (e.g., {'Pneumonia', 'Mass', 'Opacity'})
+        valid_vocab = set()
+        if os.path.exists(csv_path):
+            try:
+                with open(csv_path, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        term = row.get("Concept", "").strip().lower()
+                        if term and len(term) > 2:
+                            valid_vocab.add(term)
+            except Exception as e:
+                return f"Error reading CSV: {e}"
+
+        for addon in self.CONCEPTS:
+            valid_vocab.add(addon.lower())
+
+        # 2. Retrieve Neighbors
         results = self.retriever.retrieve(question, image, k=k)
 
-        # 2. Define Concept Mapping (The "Medical Dictionary")
-        # This groups scattered words into meaningful categories
-        concept_map = {
-            "Lung Opacity/Pneumonia": ["opacity", "opacities", "consolidation", "infiltrate", "pneumonia", "airspace",
-                                       "density"],
-            "Atelectasis": ["atelectasis", "collapse", "volume loss"],
-            "Pleural Effusion": ["effusion", "fluid", "blunting", "costophrenic"],
-            "Pneumothorax": ["pneumothorax", "air", "pleural space"],
-            "Cardiomegaly/Heart": ["cardiomegaly", "enlarged", "heart", "cardiac", "silhouette"],
-            "Edema/Congestion": ["edema", "congestion", "vascular", "hilar", "prominence"],
-            "Fracture/Bone": ["fracture", "broken", "bone", "rib", "clavicle", "skeletal"],
-            "Support Device": ["tube", "line", "catheter", "pacemaker", "clip", "wire"],
-            "Normal/Healthy": ["normal", "unremarkable", "clear", "negative", "no acute"],
-        }
+        # 3. Dynamic Scanning
+        concept_counts = Counter()
 
-        # Initialize Scores (Float, because we use weighted ranking)
-        concept_scores = {key: 0.0 for key in concept_map}
-
-        # 3. Process Neighbors with Weighted Voting
         for i, item in enumerate(results):
-            text = str(item['answer']).lower()
-
-            # Weight Decay: Rank 1 is worth 1.0, Rank 50 is worth ~0.2
-            # This ensures the BEST visual matches matter more than the noisy tail
+            # Weight Decay: Rank 1 matters more than Rank 50
             weight = 1.0 / (1.0 + (i * 0.1))
 
-            q_text = str(item['question']).lower()
+            # Context Building: Combine Answer + Question if Answer is vague
             a_text = str(item['answer']).lower()
-
-            # Text to analyze: Always check Answer, check Question if Answer is short/vague
-            text_to_check = a_text
+            text_to_scan = a_text
             if len(a_text) < 5 or a_text in ['yes', 'no']:
-                text_to_check += " " + q_text
+                text_to_scan += " " + str(item['question']).lower()
 
-            # Check against dictionary
-            matched_any = False
-            for category, keywords in concept_map.items():
-                if any(kw in text_to_check for kw in keywords):
-                    concept_scores[category] += weight
-                    matched_any = True
+            # Check for matches from our Combined Vocabulary
+            # We check if the full phrase exists in the text (e.g. "pleural effusion")
+            for concept in valid_vocab:
+                if concept in text_to_scan:
+                    concept_counts[concept.title()] += weight
 
-            # Fallback: If no specific pathology found, check for generic "Yes/No"
-            # (Optional, but helps context)
-
-        # 4. Sort & Normalize
-        total_weight = sum(concept_scores.values()) + 1e-9  # Avoid div/0
-
-        # Convert to percentages
+        # 4. Normalize & Format
+        total_weight = sum(concept_counts.values()) + 1e-9
         final_results = []
-        for cat, score in concept_scores.items():
-            if score > 0:
-                percent = (score / total_weight) * 100
-                final_results.append((cat, percent))
+        for term, score in concept_counts.items():
+            percent = (score / total_weight) * 100
+            final_results.append((term, percent))
 
-        # Sort by score
         final_results.sort(key=lambda x: x[1], reverse=True)
 
         # 5. Generate Report
         report = "### 🧬 Neighbor-Based Concept Consensus\n"
-        report += f"Analyzed **{k} neighbors** using Semantic Grouping (weighted by similarity).\n"
+        if os.path.exists(csv_path):
+            report += f"Scanned **{k} neighbors** for {len(valid_vocab)} concepts found in `{csv_path}` and CheXpert concept list.\n"
+        else:
+            report += f"Scanned **{k} neighbors** (CSV missing, using fallback).\n"
 
         # Filter: Only show concepts with > 5% relevance
         active_concepts = [c for c in final_results if c[1] > 2.0]
@@ -388,7 +604,8 @@ class ConceptExplainer:
             report += "*No specific medical pathology consensus found (mostly generic conversation).*"
         else:
             for term, conf in active_concepts[:5]:  # Top 5
-                bar_len = int(min(20, (conf / 100) * 40))  # Scale bar
+                visual_conf = min(100, conf * 2.5)
+                bar_len = int((visual_conf / 100) * 20)  # Scale bar
                 bar = "█" * bar_len + "░" * (20 - bar_len)
                 report += f"- **{term}**:\n"
                 report += f"`{bar}` ({conf:.1f}%)\n"
