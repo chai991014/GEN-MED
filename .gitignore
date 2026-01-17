@@ -1,5 +1,6 @@
 .idea
 __pycache__
+.env
 LLaVA-Med/
 rag_cache/
 mevf/model/
