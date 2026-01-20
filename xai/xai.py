@@ -279,7 +279,17 @@ class AttentionExplainer:
                     side = int(np.sqrt(actual_tokens))
                     heatmap = image_att[:side * side].view(side, side).float().cpu().numpy()
 
-            # 6. Normalize & Resize to Original Image
+            # 6. Robust Normalization (Percentile Clipping) & Resize to Original Image
+            # Models often dump massive attention on one "sink" pixel (outlier).
+            # We clip the top 2% of intensities so they don't wash out the rest.
+            threshold = np.percentile(heatmap, 98)
+            heatmap = np.clip(heatmap, 0, threshold)
+
+            # Smoothing
+            # Raw attention is spiky. We blur it slightly to reveal the "region".
+            heatmap = gaussian_filter(heatmap, sigma=1.0)
+
+            # Standard Min-Max Normalize
             heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
 
             # Resize heatmap to match original image dimensions
@@ -396,18 +406,13 @@ class RetrievalCounterfactual:
             return None, "Error loading counterfactual image."
 
         report = f"""
-        ### 🔄 Visual Counterfactual Found
-        **Analysis:**
-        The model predicted **'{original_prediction_text}'**.
-        To verify this, we retrieved a visually similar historical case that:
-        1.  **Matches the Topic:** Both questions discuss *{list(user_topic_keywords.intersection(cand_topic_keywords))}*.
-        2.  **Has Opposite Outcome:** The ground truth was **'{cf_item['answer']}'**.
-        ---
-        **Similar Historical Case:**
-        - **Question:** {cf_item['question']}
-        - **Answer:** {cf_item['answer']}
-
-        *If the model is robust, it should visually distinguish the pathology in the Input vs. the Healthy Counterfactual.*
+        ### 📊 Case Comparison
+        **Model Prediction:** {original_prediction_text}\n
+        **Counterfactual Truth:** {cf_item['answer']}\n
+        **Matched Details:**\n
+        - **Common Topic:** {list(user_topic_keywords.intersection(cand_topic_keywords))}
+        - **Historical Question:** *{cf_item['question']}*
+        - **Historical Outcome:** {cf_item['answer']} (Confirmed by Radiologist)
         """
 
         return cf_image, report
@@ -512,10 +517,9 @@ class ConceptExplainer:
         results = all_results[:10]
 
         # Create a Bar Chart text representation
-        report = "### 🧠 Concept Activation Analysis (BioMedCLIP)\n"
+        report = ""
         if os.path.exists(csv_path):
-            report += f"Scanned **{len(concepts)} concepts** from `{csv_path}` and CheXpert concept list. Showing Top 10 activations.\n\n"
-        report += "This analysis measures which high-level medical concepts are most activated by this image.\n\n"
+            report += f"✅ Scanned **{len(concepts)} concepts** (Combined CSV + CheXpert List).\n\n"
 
         has_output = False
         for concept, score in results:
@@ -591,11 +595,11 @@ class ConceptExplainer:
         final_results.sort(key=lambda x: x[1], reverse=True)
 
         # 5. Generate Report
-        report = "### 🧬 Neighbor-Based Concept Consensus\n"
+        report = ""
         if os.path.exists(csv_path):
-            report += f"Scanned **{k} neighbors** for {len(valid_vocab)} concepts found in `{csv_path}` and CheXpert concept list.\n"
+            report += f"✅ Aggregated data from **{k} similar neighbours** (Checked against CSV + CheXpert list).\n"
         else:
-            report += f"Scanned **{k} neighbors** (CSV missing, using fallback).\n"
+            report += f"✅ Aggregated data from **{k} similar neighbours** (Checked against CheXpert list only).\n"
 
         # Filter: Only show concepts with > 5% relevance
         active_concepts = [c for c in final_results if c[1] > 2.0]
@@ -684,7 +688,13 @@ class RAGJudge:
         else:
             try:
                 genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel("gemini-3-flash-preview")
+                self.generation_config = {
+                    "response_mime_type": "application/json"
+                }
+                self.model = genai.GenerativeModel(
+                    "gemini-3-flash-preview",
+                    generation_config=self.generation_config
+                )
             except Exception as e:
                 print(f"⚠️ RAG Judge Init Error: {e}")
                 self.model = None
@@ -751,9 +761,22 @@ class RAGJudge:
            - **RELEVANT:** If the item offers useful visual OR textual evidence.
            - **IRRELEVANT:** If it is a Hallucination, Wrong Body Part, or Unrelated Condition.
 
-        --- OUTPUT TEMPLATE (JSON ONLY) ---
-        You must return a SINGLE valid JSON object. 
-        Do NOT use Markdown formatting (no ```json blocks).
+        --- OUTPUT REQUIREMENT ---
+        Output a JSON object with this schema:
+        {
+            "items": [
+                {
+                    "index": int,
+                    "visual_check": "string",
+                    "semantic_check": "string",
+                    "verdict": "RELEVANT" or "IRRELEVANT",
+                    "reasoning": "string"
+                }
+            ],
+            "summary": "string"
+        }
+        
+        --- OUTPUT TEMPLATE EXAMPLE (JSON ONLY) ---
         
         {
             "items": [
@@ -786,4 +809,5 @@ class RAGJudge:
 
         except Exception as e:
             print(f"JSON Parse Error: {e}")
-            return {}, f"❌ Error parsing Judge Output: {str(e)}"
+            fallback_data = {"items": [{"verdict": "ERROR", "visual_check": "N/A", "semantic_check": "N/A", "reasoning": "API Error"} for _ in range(len(rag_items))]}
+            return fallback_data, f"❌ Error parsing Judge Output: {str(e)}"
