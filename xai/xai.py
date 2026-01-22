@@ -443,7 +443,7 @@ class ConceptExplainer:
         "Support Devices"
     ]
 
-    def __init__(self, inference_engine):
+    def __init__(self, inference_engine, csv_path="./xai/medical_concepts_stats_processed.csv"):
         # We need the XAI retriever (BioMedCLIP) for encoding and searching
         if hasattr(inference_engine, 'xai_retriever') and inference_engine.xai_retriever is not None:
             self.model = inference_engine.retriever.model
@@ -451,10 +451,11 @@ class ConceptExplainer:
             self.tokenizer = inference_engine.retriever.tokenizer
             self.device = inference_engine.retriever.device
             self.retriever = inference_engine.retriever
+            self.csv_list = csv_path
         else:
             self.model = None
 
-    def evaluate(self, image, concepts=None, csv_path="medical_concepts_stats_processed.csv"):
+    def evaluate(self, image, concepts=None):
         """
         Method 1: Zero-Shot Concept Activation (Direct CSV Load).
         Uses BioMedCLIP to measure the similarity between the image and high-level
@@ -467,9 +468,9 @@ class ConceptExplainer:
             # Default medical concepts to test against
             concepts = []
             # --- DIRECT LOAD FROM CURATED CSV ---
-            if os.path.exists(csv_path):
+            if os.path.exists(self.csv_list):
                 try:
-                    with open(csv_path, "r", encoding="utf-8") as f:
+                    with open(self.csv_list, "r", encoding="utf-8") as f:
                         reader = csv.DictReader(f)
                         raw_candidates = []
 
@@ -518,7 +519,7 @@ class ConceptExplainer:
 
         # Create a Bar Chart text representation
         report = ""
-        if os.path.exists(csv_path):
+        if os.path.exists(self.csv_list):
             report += f"✅ Scanned **{len(concepts)} concepts** (Combined CSV + CheXpert List).\n\n"
 
         has_output = False
@@ -537,7 +538,7 @@ class ConceptExplainer:
 
         return results, report
 
-    def discover_concepts(self, image, question, k=30, csv_path="medical_concepts_stats_processed.csv"):
+    def discover_concepts(self, image, question, k=30):
         """
         Method 2: Neighbor-Based Concept Consensus (Dynamic CSV-Driven).
         Retrieves k similar cases and extracts curated CSV file (concepts)
@@ -549,9 +550,9 @@ class ConceptExplainer:
         # 1. Load Vocabulary from CSV
         # We build a set of valid terms to look for (e.g., {'Pneumonia', 'Mass', 'Opacity'})
         valid_vocab = set()
-        if os.path.exists(csv_path):
+        if os.path.exists(self.csv_list):
             try:
-                with open(csv_path, "r", encoding="utf-8") as f:
+                with open(self.csv_list, "r", encoding="utf-8") as f:
                     reader = csv.DictReader(f)
                     for row in reader:
                         term = row.get("Concept", "").strip().lower()
@@ -596,7 +597,7 @@ class ConceptExplainer:
 
         # 5. Generate Report
         report = ""
-        if os.path.exists(csv_path):
+        if os.path.exists(self.csv_list):
             report += f"✅ Aggregated data from **{k} similar neighbours** (Checked against CSV + CheXpert list).\n"
         else:
             report += f"✅ Aggregated data from **{k} similar neighbours** (Checked against CheXpert list only).\n"
@@ -692,7 +693,7 @@ class RAGJudge:
                     "response_mime_type": "application/json"
                 }
                 self.model = genai.GenerativeModel(
-                    "gemini-3-flash-preview",
+                    "gemini-2.5-flash",
                     generation_config=self.generation_config
                 )
             except Exception as e:
@@ -795,19 +796,25 @@ class RAGJudge:
         contents.append(closing_prompt)
 
         # 4. Single API Call
-        try:
-            response = self.model.generate_content(contents)
-            raw_text = response.text
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self.model.generate_content(contents)
+                raw_text = response.text
 
-            # Clean Markdown (Gemini often adds ```json)
-            clean_text = re.sub(r"```json|```", "", raw_text).strip()
+                # Clean Markdown (Gemini often adds ```json)
+                clean_text = re.sub(r"```json|```", "", raw_text).strip()
 
-            data = json.loads(clean_text)
-            summary = data.get("summary", "No summary provided.")
+                data = json.loads(clean_text)
+                summary = data.get("summary", "No summary provided.")
 
-            return data, summary
+                return data, summary
 
-        except Exception as e:
-            print(f"JSON Parse Error: {e}")
-            fallback_data = {"items": [{"verdict": "ERROR", "visual_check": "N/A", "semantic_check": "N/A", "reasoning": "API Error"} for _ in range(len(rag_items))]}
-            return fallback_data, f"❌ Error parsing Judge Output: {str(e)}"
+            except Exception as e:
+                print(f"Attempt {attempt + 1}/{max_retries} Multimodal Judge Error: {e}")
+                if attempt < max_retries - 1:
+                    continue
+
+        print(f"❌ All {max_retries} attempts failed.")
+        fallback_data = {"items": [{"verdict": "ERROR", "visual_check": "N/A", "semantic_check": "N/A", "reasoning": "API Error"} for _ in range(len(rag_items))]}
+        return fallback_data, f"❌ All {max_retries} attempts failed."

@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from mevf.training import VQARADDataset, Args, VQAModel
+from inference.mevf.training import VQARADDataset, Args, VQAModel
 
 
 class MEVFAdapter:

@@ -10,7 +10,7 @@ import pickle
 import random
 import time
 from datetime import datetime
-from utils import setup_logger
+from inference.utils import setup_logger
 
 
 # =============================================================================

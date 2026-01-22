@@ -4,7 +4,7 @@ import open_clip
 import faiss
 from tqdm import tqdm
 from PIL import Image
-from prompt_template import get_retrieval_context_string
+from inference.prompt_template import get_retrieval_context_string
 
 
 class MultimodalRetriever:

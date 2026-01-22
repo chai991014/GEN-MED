@@ -300,7 +300,7 @@ def run_mevf_pipeline():
     engine = EnsembleEngine()
     # Updated path to match your request
     input_files = glob.glob("./result/result-mevf/results_*.csv")
-    output_dir = "./result/processed-mevf"
+    output_dir = "result/processed-mevf"
 
     # --- STEP 1: MERGE ALL FILES (Logic from CODE B) ---
     merged_df = None
@@ -413,8 +413,8 @@ def run_mevf_pipeline():
 
 
 def process_batch_closed_logic():
-    input_file = "./result/processed-mevf/batch_processed_results_20260115_131934.csv"
-    output_dir = "./result/processed-mevf"
+    input_file = "result/processed-mevf/batch_processed_results_20260115_131934.csv"
+    output_dir = "result/processed-mevf"
 
     print(f"Reading {input_file}...")
     df = pd.read_csv(input_file)
@@ -473,8 +473,8 @@ def process_batch_closed_logic():
 
 
 def run_recovery():
-    INPUT_FILE = "./result/processed-agent/batch_processed_results_20260110_062157.csv"
-    OUTPUT_DIR = "./result/processed-agent/"
+    INPUT_FILE = "result/processed-agent/batch_processed_results_20260110_062157.csv"
+    OUTPUT_DIR = "result/processed-agent/"
 
     df = pd.read_csv(INPUT_FILE)
 
@@ -551,7 +551,7 @@ def run_recovery():
 
 def calculate_judge_error_summary():
     INPUT_FILE = "./result/judge-error-rate/batch_processed_results_*.csv"
-    OUTPUT_DIR = "./result/judge-error-rate"
+    OUTPUT_DIR = "result/judge-error-rate"
 
     files = glob.glob(INPUT_FILE)
     if not files:
@@ -678,8 +678,8 @@ def calculate_judge_error_summary():
 
 
 def calculate_judge_error_summary_v2():
-    INPUT_DIR = "./result/judge-error-rate"
-    OUTPUT_DIR = "./result/judge-error-rate"
+    INPUT_DIR = "result/judge-error-rate"
+    OUTPUT_DIR = "result/judge-error-rate"
 
     # 1. DEFINE PATTERNS
     patterns = [
@@ -830,8 +830,8 @@ def calculate_judge_error_summary_v2():
 
 
 def process_summary_file():
-    INPUT_FILE = "./result/judge-error-rate/processed_results_summary_judge_error_20260116_112611.csv"
-    OUTPUT_DIR = "./result/judge-error-rate"
+    INPUT_FILE = "result/judge-error-rate/processed_results_summary_judge_error_20260116_112611.csv"
+    OUTPUT_DIR = "result/judge-error-rate"
     df = pd.read_csv(INPUT_FILE)
 
     def parse_configuration(row_val):

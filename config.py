@@ -12,9 +12,9 @@ CONFIG = {
     # ==========================================
     # "MODEL_TYPE": "MEVF",
     "REASONING_MODEL": "BAN",
-    "MEVF_WEIGHTS": "./mevf/BAN_best_model.pth",
-    "MAML_WEIGHTS": "./mevf/pretrained_maml.weights",
-    "AE_WEIGHTS": "./mevf/pretrained_ae.pth",
+    "MEVF_WEIGHTS": "./inference/mevf/BAN_best_model.pth",
+    "MAML_WEIGHTS": "./inference/mevf/pretrained_maml.weights",
+    "AE_WEIGHTS": "./inference/mevf/pretrained_ae.pth",
 
     # ==========================================
     # LLM Model Selection

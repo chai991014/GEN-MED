@@ -1,6 +1,6 @@
 import os
 from datasets import load_dataset
-from retriever import MultimodalRetriever
+from inference.retriever import MultimodalRetriever
 
 # Configuration
 DATASET_ID = "flaviagiammarino/vqa-rad"

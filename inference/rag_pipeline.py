@@ -1,4 +1,4 @@
-from prompt_template import (
+from inference.prompt_template import (
     get_reflexion_critique_prompt,
     get_reflexion_critique_context,
     get_reflexion_refine_prompt

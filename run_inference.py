@@ -6,11 +6,11 @@ import torch
 import gc
 import pandas as pd
 from datasets import load_dataset, load_from_disk
-from llm_adapter import get_llm_adapter
-from rag_pipeline import RAGPipeline
-from retriever import MultimodalRetriever
-from mevf.adapter import MEVFAdapter
-from utils import get_config, normalize_text
+from inference.llm_adapter import get_llm_adapter
+from inference.rag_pipeline import RAGPipeline
+from inference.retriever import MultimodalRetriever
+from inference.mevf.adapter import MEVFAdapter
+from inference.utils import get_config, normalize_text
 
 
 def load_data_source(path, split):
@@ -30,7 +30,7 @@ def run_inference(config_dict):
     # 1. GET CONFIG
     # ==========================================
     config = get_config(config_dict)
-    config["LLAVA_REPO_PATH"] = os.path.abspath("./LLaVA-Med")
+    config["LLAVA_REPO_PATH"] = os.path.abspath("LLaVA-Med")
 
     # ==========================================
     # 2. PIPELINE INITIALIZATION
@@ -93,7 +93,7 @@ def run_inference(config_dict):
     dataset = load_data_source(config["DATASET_ID"], split=config["DATASET"])
 
     if config["TEST_MODE"]:
-        dataset = dataset.select(range(20))
+        dataset = dataset.select(range(3))
         print("⚠️ WARNING: Running in Test Mode (20 samples only)")
 
     results = []
@@ -162,17 +162,18 @@ def run_inference(config_dict):
 
 
 if __name__ == "__main__":
-    import config
-    if len(sys.argv) < 2:
-        sys.exit(1)
-
-    try:
-        config_idx = int(sys.argv[1])
-
-        # Dynamically retrieve the variable CONFIG_i from the config module
-        cfg = getattr(config, f"CONFIG_{config_idx}")
-        run_inference(cfg)
-
-    except (ValueError, AttributeError) as e:
-        print(f"❌ Error: Could not find CONFIG_{sys.argv[1]} in config.py")
-        sys.exit(1)
+    from config import CONFIG
+    run_inference(CONFIG)
+    # if len(sys.argv) < 2:
+    #     sys.exit(1)
+    #
+    # try:
+    #     config_idx = int(sys.argv[1])
+    #
+    #     # Dynamically retrieve the variable CONFIG_i from the config module
+    #     cfg = getattr(config, f"CONFIG_{config_idx}")
+    #     run_inference(cfg)
+    #
+    # except (ValueError, AttributeError) as e:
+    #     print(f"❌ Error: Could not find CONFIG_{sys.argv[1]} in config.py")
+    #     sys.exit(1)

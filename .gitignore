@@ -3,6 +3,6 @@ __pycache__
 .env
 LLaVA-Med/
 rag_cache/
-mevf/model/
+inference/mevf/model/
 finetune/dora-llava
 finetune/qlora-llava

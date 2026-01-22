@@ -102,7 +102,7 @@ def get_config(config):
 
     model_short = model_map.get(config["MODEL_TYPE"], config["MODEL_TYPE"].replace("/", "_"))
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = "./result"
+    output_dir = "./inference/result"
     os.makedirs(output_dir, exist_ok=True)
 
     if adapter_short is not None:

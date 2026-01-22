@@ -4,11 +4,10 @@ import gradio as gr
 import base64
 import gc
 from datasets import load_dataset, load_from_disk, concatenate_datasets
-from llm_adapter import get_llm_adapter
-from rag_pipeline import RAGPipeline
-from retriever import MultimodalRetriever
-from xai import FastOcclusionExplainer, AttentionExplainer, ConceptExplainer, RetrievalCounterfactual, ReflexionJudge, RAGJudge, apply_colormap
-from PIL import Image, ImageDraw
+from inference.llm_adapter import get_llm_adapter
+from inference.rag_pipeline import RAGPipeline
+from inference.retriever import MultimodalRetriever
+from xai.xai import FastOcclusionExplainer, AttentionExplainer, ConceptExplainer, RetrievalCounterfactual, ReflexionJudge, RAGJudge, apply_colormap
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
 
@@ -18,7 +17,7 @@ CONFIG = {
     "TECH_TAG": None,
     "OUTPUT_FILE": None,
     "DATASET_ID": None,
-    "LLAVA_REPO_PATH": "../LLaVA-Med",
+    "LLAVA_REPO_PATH": "./LLaVA-Med",
     "MODEL_TYPE": None,
     "ADAPTER_PATH": None,
     "PROMPT": "Instruct",
@@ -32,18 +31,14 @@ CONFIG = {
 # --- Model & Adapter / Dataset Mapping ---
 MODEL_OPTIONS = {
     "LLaVA-Med 1.5 Mistral 7B (Base)": {"model": "microsoft/llava-med-v1.5-mistral-7b", "adapter": None},
-    "LLaVA-Med 1.5 Mistral 7B (QLoRA)": {"model": "../finetune/qlora-llava", "adapter": None},
-    "LLaVA-Med 1.5 Mistral 7B (Dora)": {"model": "../finetune/dora-llava", "adapter": None},
+    "LLaVA-Med 1.5 Mistral 7B (QLoRA)": {"model": "./finetune/qlora-llava", "adapter": None},
+    "LLaVA-Med 1.5 Mistral 7B (Dora)": {"model": "./finetune/dora-llava", "adapter": None},
     "Qwen3-VL-2B-Instruct (Base)": {"model": "Qwen/Qwen3-VL-2B-Instruct", "adapter": None},
-    "Qwen3-VL-2B-Instruct (QLoRA)": {"model": "Qwen/Qwen3-VL-2B-Instruct",
-                                                "adapter": "../finetune/qlora-qwen3-2b/checkpoint-600"},
-    "Qwen3-VL-2B-Instruct (Dora)": {"model": "Qwen/Qwen3-VL-2B-Instruct",
-                                               "adapter": "../finetune/dora-qwen3-2b/checkpoint-580"},
+    "Qwen3-VL-2B-Instruct (QLoRA)": {"model": "Qwen/Qwen3-VL-2B-Instruct", "adapter": "./finetune/qlora-qwen3-2b/checkpoint-600"},
+    "Qwen3-VL-2B-Instruct (Dora)": {"model": "Qwen/Qwen3-VL-2B-Instruct", "adapter": "./finetune/dora-qwen3-2b/checkpoint-580"},
     "Qwen3-VL-4B-Instruct (Base)": {"model": "Qwen/Qwen3-VL-4B-Instruct", "adapter": None},
-    "Qwen3-VL-4B-Instruct (QLoRA)": {"model": "Qwen/Qwen3-VL-4B-Instruct",
-                                                "adapter": "../finetune/qlora-qwen3-4b/checkpoint-390"},
-    "Qwen3-VL-4B-Instruct (Dora)": {"model": "Qwen/Qwen3-VL-4B-Instruct",
-                                               "adapter": "../finetune/dora-qwen3-4b/checkpoint-390"},
+    "Qwen3-VL-4B-Instruct (QLoRA)": {"model": "Qwen/Qwen3-VL-4B-Instruct", "adapter": "./finetune/qlora-qwen3-4b/checkpoint-390"},
+    "Qwen3-VL-4B-Instruct (Dora)": {"model": "Qwen/Qwen3-VL-4B-Instruct", "adapter": "./finetune/dora-qwen3-4b/checkpoint-390"},
 }
 
 DATASET_OPTIONS = {
@@ -52,7 +47,7 @@ DATASET_OPTIONS = {
         "size": 451
     },
     "SLAKE": {
-        "path": "../slake_vqa_rad_format",
+        "path": "./slake_vqa_rad_format",
         "size": 1407
     },
 }
@@ -263,32 +258,48 @@ def load_engine(model_key, use_rag, use_reflexion, prompt_style, k_val, alpha_va
     return get_status_msg(LOADED_CONFIG), LOADED_CONFIG, gr.update(interactive=False)
 
 
-def run_gui_inference(dataset_input, idx, model_key, use_rag, use_reflexion, prompt_style, k_val, alpha_val):
+def run_database_inference(dataset_input, idx, model_key, use_rag, use_reflexion, prompt_style, k_val, alpha_val):
     """
     outputs = [
     status, img_out, question, gt, prediction, reflex_intermediate_out, retrieval_log_out,
     attention_out, occlusion_out, concept_rpt_zs_out, concept_rpt_nc_out, cf_visual_out, cf_visual_report_out,
     reflex_judge_report_out, rag_judge_summary_out, prediction_state,
     *rag_atomic_components, *ref_updates, *rag_updates_acc,
+    *att_updates, *occ_updates, *zs_updates, *nc_updates, *cf_updates,
+    *ref_judge_updates, *rag_judge_updates,
+
     reflex_intermediate_output, retrieval_log,
+    attention_out, occlusion_out, attention_out, occlusion_out,
+    concept_rpt_zs_out, concept_rpt_nc_out, cf_visual_out, cf_visual_report_out,
+    reflex_judge_report_out, rag_judge_summary_out,
     *rag_atomic_components, *ref_updates, *rag_updates_acc,
-    *rag_atomic_components, *rag_updates_acc
+    *rag_atomic_components, *rag_updates_acc,
+    *att_updates, *occ_updates, *stk_aud_vis_updates, *zs_updates, *nc_updates, *cf_updates,
+    *ref_judge_updates, *rag_judge_updates,
     ]
     """
     global inference_engine, LOADED_CONFIG
 
     empty_rag = [gr.update(visible=False), None, None, gr.update(visible=False)] * MAX_RAG_K
     empty_xai = "**Run XAI Analysis** to generate the report."
-    empty_report = "**Run LLM as Judge Evaluation** to generate the report."
+    empty_report = "**Run LLM Judge Evaluation** to generate the report."
     closed_acc = get_closed_acc()
     reset_results = (
         None, None, "", "", "", "", "No retrieval",
         None, None, empty_xai, empty_xai, None, empty_xai,
         empty_report, empty_report, None,
         *empty_rag, *closed_acc, *closed_acc,
+        *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
+        *closed_acc, *closed_acc,
+
         "", "No retrieval",
+        None, None, None, None,
+        empty_xai, empty_xai, None, empty_xai,
+        empty_report, empty_report,
         *empty_rag, *closed_acc, *closed_acc,
-        *empty_rag, *closed_acc
+        *empty_rag, *closed_acc,
+        *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
+        *closed_acc, *closed_acc
     )
 
     # --- CHECK 1: Is engine loaded? ---
@@ -340,15 +351,6 @@ def run_gui_inference(dataset_input, idx, model_key, use_rag, use_reflexion, pro
 
         prediction_text = raw_pred.get('prediction', '').strip()
 
-        # res_text = "### **Question**\n"
-        # res_text += f"- {question}\n"
-        # res_text += "---\n"
-        # res_text += "### **Ground Truth**\n"
-        # res_text += f"- {gt}\n"
-        # res_text += "---\n"
-        # res_text += "### **Prediction**\n"
-        # res_text += f"{prediction_text}"
-
         draft_text = raw_pred.get('reflexion_draft', 'N/A')
         critique_text = raw_pred.get('reflexion_critique', 'N/A')
 
@@ -367,6 +369,8 @@ def run_gui_inference(dataset_input, idx, model_key, use_rag, use_reflexion, pro
         retrieval_log = f"Retrieved Indices: {retrieved_ids}" if retrieved_ids else "None (RAG Disabled)"
 
         rag_updates = []
+        stk_rag_updates = []
+        stk_aud_rag_updates = []
         saved_rag_items = []
 
         train_ds = None
@@ -395,8 +399,12 @@ def run_gui_inference(dataset_input, idx, model_key, use_rag, use_reflexion, pro
                 """
 
                 rag_updates.extend([gr.update(visible=True), r_img, r_txt, gr.update(value="", visible=True)])
+                stk_rag_updates.extend([gr.update(visible=True), r_img, r_txt, gr.update(value="", visible=True)])
+                stk_aud_rag_updates.extend([gr.update(visible=True), r_img, r_txt, gr.update(value="", visible=True)])
             else:
                 rag_updates.extend([gr.update(visible=False), None, None, gr.update(visible=False)])
+                stk_rag_updates.extend([gr.update(visible=False), None, None, gr.update(visible=False)])
+                stk_aud_rag_updates.extend([gr.update(visible=False), None, None, gr.update(visible=False)])
 
         state_data = {
             "image": image,
@@ -425,10 +433,17 @@ def run_gui_inference(dataset_input, idx, model_key, use_rag, use_reflexion, pro
             None, None, empty_xai, empty_xai, None, empty_xai,
             empty_report, empty_report, state_data,
             *rag_updates, *ref_updates, *rag_updates_acc,
+            *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
+            *closed_acc, *closed_acc,
 
             reflex_intermediate_output, retrieval_log,
-            *rag_updates, *ref_updates, *rag_updates_acc,
-            *rag_updates, *rag_updates_acc
+            None, None, None, None,
+            empty_xai, empty_xai, None, empty_xai,
+            empty_report, empty_report,
+            *stk_rag_updates, *ref_updates, *rag_updates_acc,
+            *stk_aud_rag_updates, *rag_updates_acc,
+            *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
+            *closed_acc, *closed_acc
         )
 
     except Exception as e:
@@ -437,7 +452,7 @@ def run_gui_inference(dataset_input, idx, model_key, use_rag, use_reflexion, pro
         return f"## ❌ **System Error:** {str(e)}", *reset_results[1:]
 
 
-def run_xai_only(state_data):
+def run_xai(state_data):
     global inference_engine, LOADED_CONFIG
 
     closed_acc = get_closed_acc()
@@ -525,12 +540,13 @@ def run_xai_only(state_data):
     return (
         img_att, img_occ, concept_rpt_zs, concept_rpt_nc, cf_visual_img, cf_visual_rpt,
         *att_updates, *occ_updates, *zs_updates, *nc_updates, *cf_updates,
-        img_att, img_occ, img_att, img_occ, concept_rpt_zs, concept_rpt_nc, cf_visual_img, cf_visual_rpt,
+        img_att, img_occ, img_att, img_occ,
+        concept_rpt_zs, concept_rpt_nc, cf_visual_img, cf_visual_rpt,
         *att_updates, *occ_updates, *stk_aud_vis_updates, *zs_updates, *nc_updates, *cf_updates
     )
 
 
-def run_full_evaluation(state_data):
+def run_llm_judge(state_data):
     """
     Runs BOTH the Reflexion Judge (Text) and the RAG Judge (Visual) sequentially.
     Returns two separate report strings.
@@ -687,9 +703,9 @@ def reset_system():
 with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
     last_loaded_state = gr.State(None)
     prediction_state = gr.State()
-    icon_html = get_img_html("../assets/GENMED.png")
-    icon_html_live = get_img_html("../assets/GENMED_LIVE.png")
-    icon_html_xai = get_img_html("../assets/GENMED_XAI.png")
+    icon_html = get_img_html("assets/GENMED.png")
+    icon_html_live = get_img_html("assets/GENMED_LIVE.png")
+    icon_html_xai = get_img_html("assets/GENMED_XAI.png")
 
     with gr.Sidebar(position="left", width="25%"):
         gr.Markdown(f"# {icon_html}GEN-MED-X")
@@ -733,7 +749,7 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
 
                 run_btn = gr.Button("🚀 Run Inference", variant="secondary")
                 xai_btn = gr.Button("⚡ Run XAI Analysis", variant="secondary")
-                judge_btn = gr.Button("⚖️ Run LLM as Judge Evaluation", variant="secondary")
+                judge_btn = gr.Button("⚖️ Run LLM Judge Evaluation", variant="secondary")
 
     with gr.Tab("Live Diagnostic"):
         gr.Markdown(f"## {icon_html_live} Live Diagnostic ChatBot")
@@ -1053,7 +1069,7 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
                             rag_atomic_components.extend([r, r_img, r_txt, r_eval])
                             rag_verdict_boxes.append(r_eval)
 
-                    rag_rpt_head, rag_rpt_body, rag_rpt_state, rag_rpt_btn = create_md_accordion("### 📋 AI Judge Assessment (Gemini 3 Flash) - Overall Retrieval Health", initial_visible=False)
+                    rag_rpt_head, rag_rpt_body, rag_rpt_state, rag_rpt_btn = create_md_accordion("### 📋 AI Judge Assessment (Gemini 2.5 Flash) - Overall Retrieval Health", initial_visible=False)
                     with rag_rpt_body:
                         rag_judge_summary_out = gr.Markdown(container=True)
 
@@ -1109,7 +1125,7 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
         outputs=all_inputs_and_buttons,
         queue=False
     ).then(
-        run_gui_inference,
+        run_database_inference,
         inputs=[dataset_input, idx_input, model_select, rag_toggle, reflexion_toggle, prompt_input, k_slider, a_slider],
         outputs=[
             status, img_out, question, gt, prediction, reflex_intermediate_out, retrieval_log_out,
@@ -1118,12 +1134,31 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
             *rag_atomic_components,
             ref_res_body, ref_res_state, ref_res_btn,
             rag_item_body, rag_item_state, rag_item_btn,
+            att_body, att_state, att_btn,
+            occ_body, occ_state, occ_btn,
+            zs_body, zs_state, zs_btn,
+            nc_body, nc_state, nc_btn,
+            cf_body, cf_state, cf_btn,
+            ref_rpt_body, ref_rpt_state, ref_rpt_btn,
+            rag_rpt_body, rag_rpt_state, rag_rpt_btn,
+
             stk_reflex_out, stk_retrieval_log_out,
+            stk_attention_out, stk_occlusion_out, stk_aud_att_out, stk_aud_occ_out,
+            stk_concept_zs_out, stk_concept_nc_out, stk_cf_visual_out, stk_cf_visual_report_out,
+            stk_ref_judge_out, stk_rag_judge_out,
             *stk_rag_atomic_components,
             stk_ref_res_body, stk_ref_res_state, stk_ref_res_btn,
             stk_rag_body, stk_rag_state, stk_rag_btn,
             *stk_audit_rag_atomic_components,
-            stk_audit_body, stk_audit_state, stk_audit_btn
+            stk_audit_body, stk_audit_state, stk_audit_btn,
+            stk_att_body, stk_att_state, stk_att_btn,
+            stk_occ_body, stk_occ_state, stk_occ_btn,
+            stk_aud_vis_body, stk_aud_vis_state, stk_aud_vis_btn,
+            stk_zs_body, stk_zs_state, stk_zs_btn,
+            stk_nc_body, stk_nc_state, stk_nc_btn,
+            stk_cf_body, stk_cf_state, stk_cf_btn,
+            stk_ref_rpt_body, stk_ref_rpt_state, stk_ref_rpt_btn,
+            stk_rag_rpt_body, stk_rag_rpt_state, stk_rag_rpt_btn
         ]
     ).then(
         fn=unlock_interface,
@@ -1137,7 +1172,7 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
         outputs=all_inputs_and_buttons,
         queue=False
     ).then(
-        run_xai_only,
+        run_xai,
         inputs=[prediction_state],
         outputs=[
             attention_out, occlusion_out, concept_rpt_zs_out, concept_rpt_nc_out, cf_visual_out, cf_visual_report_out,
@@ -1148,8 +1183,8 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
             cf_body, cf_state, cf_btn,
 
             # Stakeholder Analysis
-            stk_attention_out, stk_occlusion_out, stk_aud_att_out, stk_aud_occ_out, stk_concept_zs_out, stk_concept_nc_out, stk_cf_visual_out,
-            stk_cf_visual_report_out,
+            stk_attention_out, stk_occlusion_out, stk_aud_att_out, stk_aud_occ_out,
+            stk_concept_zs_out, stk_concept_nc_out, stk_cf_visual_out, stk_cf_visual_report_out,
             stk_att_body, stk_att_state, stk_att_btn,
             stk_occ_body, stk_occ_state, stk_occ_btn,
             stk_aud_vis_body, stk_aud_vis_state, stk_aud_vis_btn,
@@ -1169,7 +1204,7 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
         outputs=all_inputs_and_buttons,
         queue=False
     ).then(
-        run_full_evaluation,
+        run_llm_judge,
         inputs=[prediction_state],
         outputs=[
             reflex_judge_report_out, rag_judge_summary_out, *rag_verdict_boxes,
@@ -1215,8 +1250,8 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
             stk_reflex_out, stk_retrieval_log_out, *stk_rag_atomic_components, *stk_audit_rag_atomic_components,
             stk_ref_res_body, stk_ref_res_state, stk_ref_res_btn,
             stk_rag_body, stk_rag_state, stk_rag_btn,
-            stk_attention_out, stk_occlusion_out, stk_aud_att_out, stk_aud_occ_out, stk_concept_zs_out, stk_concept_nc_out, stk_cf_visual_out,
-            stk_cf_visual_report_out,
+            stk_attention_out, stk_occlusion_out, stk_aud_att_out, stk_aud_occ_out,
+            stk_concept_zs_out, stk_concept_nc_out, stk_cf_visual_out, stk_cf_visual_report_out,
             stk_att_body, stk_att_state, stk_att_btn,
             stk_occ_body, stk_occ_state, stk_occ_btn,
             stk_aud_vis_body, stk_aud_vis_state, stk_aud_vis_btn,
@@ -1317,4 +1352,4 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
 
 
 if __name__ == "__main__":
-    demo.launch(favicon_path="../assets/GENMED_XAI.png", server_port=7860)
+    demo.launch(favicon_path="assets/GENMED_XAI.png", server_port=7860)

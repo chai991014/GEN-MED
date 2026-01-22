@@ -1,6 +1,6 @@
 import torch
 import sys
-from prompt_template import (
+from inference.prompt_template import (
     get_inference_prompt,
     get_instruct_inference_prompt,
     get_reflexion_critique_prompt,
