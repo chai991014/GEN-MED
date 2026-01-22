@@ -306,7 +306,7 @@ def run_database_inference(dataset_input, idx, model_key, use_rag, use_reflexion
     if inference_engine is None or LOADED_CONFIG is None:
         error_msg = """
             ## ⚠️ **Error:** No model loaded.\n
-            Please select a model and click 'Initialize Engine'.
+            Please select a model and click **Initialize Engine**.
         """
         return error_msg, *reset_results[1:]
 
@@ -325,7 +325,7 @@ def run_database_inference(dataset_input, idx, model_key, use_rag, use_reflexion
         error_msg = f"""
             ## ⚠️ **Settings Mismatch**\n
             You changed: `{', '.join(changes)}`\n
-            Please click **'Initialize / Reload Engine'** to apply changes before running inference.
+            Please click **Initialize / Reload Engine** to apply changes before running inference.
         """
         return error_msg, *reset_results[1:]
 
@@ -458,11 +458,26 @@ def run_xai(state_data):
     closed_acc = get_closed_acc()
 
     # Validation
-    if not state_data:
-        error_msg = "⚠️ **Action Required:** Please run **Inference** first."
+    if inference_engine is None or LOADED_CONFIG is None:
+        error_msg = f"""
+            ## ⚠️ **Error:** No model loaded.\n
+            Please select a model and click **Initialize Engine**.
+        """
         return (
+            error_msg,
             None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
-            None, None, None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc
+            None, None, None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc
+        )
+
+    if not state_data:
+        error_msg = f"""
+            ## ⚠️ **Error:** Action Required.\n
+            Please run **DB Inference** first.
+        """
+        return (
+            error_msg,
+            None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
+            None, None, None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc
         )
 
     image = state_data["image"]
@@ -530,6 +545,7 @@ def run_xai(state_data):
         concept_rpt_zs = f"Concept Analysis Failed: {e}"
         concept_rpt_nc = f"Concept Analysis Failed: {e}"
 
+    valid_status = get_status_msg(LOADED_CONFIG)
     att_updates = get_open_acc() if img_att is not None else closed_acc
     occ_updates = get_open_acc() if img_occ is not None else closed_acc
     zs_updates = get_open_acc() if concept_rpt_zs and "RAG disabled" not in concept_rpt_zs else closed_acc
@@ -538,6 +554,7 @@ def run_xai(state_data):
     stk_aud_vis_updates = get_open_acc() if img_att is not None or img_occ is not None else closed_acc
 
     return (
+        valid_status,
         img_att, img_occ, concept_rpt_zs, concept_rpt_nc, cf_visual_img, cf_visual_rpt,
         *att_updates, *occ_updates, *zs_updates, *nc_updates, *cf_updates,
         img_att, img_occ, img_att, img_occ,
@@ -553,9 +570,24 @@ def run_llm_judge(state_data):
     """
     closed_acc = get_closed_acc()
 
-    if not state_data:
-        error_msg = "⚠️ **Action Required:** Please run **Inference** first."
+    if inference_engine is None or LOADED_CONFIG is None:
+        error_msg = f"""
+            ## ⚠️ **Error:** No model loaded.\n
+            Please select a model and click **Initialize Engine**.
+        """
         return (
+            error_msg,
+            error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc,
+            error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc
+        )
+
+    if not state_data:
+        error_msg = f"""
+            ## ⚠️ **Error:** Action Required.\n
+            Please run **DB Inference** first.
+        """
+        return (
+            error_msg,
             error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc,
             error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc
         )
@@ -632,11 +664,13 @@ def run_llm_judge(state_data):
         rag_item_updates_deep = [gr.update(value="") for _ in range(MAX_RAG_K)]
         rag_item_updates_stk = [gr.update(value="") for _ in range(MAX_RAG_K)]
 
+    valid_status = get_status_msg(LOADED_CONFIG)
     ref_judge_updates = get_open_acc() if "Reflexion disabled" not in reflexion_report else closed_acc
     rag_judge_updates = get_open_acc() if "No RAG items" not in rag_summary_text else closed_acc
 
     # RETURN BOTH REPORTS
     return (
+        valid_status,
         reflexion_report, rag_summary_text, *rag_item_updates_deep, *ref_judge_updates, *rag_judge_updates,
         reflexion_report, rag_summary_text, *rag_item_updates_stk, *ref_judge_updates, *rag_judge_updates, *rag_judge_updates
     )
@@ -702,7 +736,7 @@ def reset_system():
 
 with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
     last_loaded_state = gr.State(None)
-    prediction_state = gr.State()
+    prediction_state = gr.State(None)
     icon_html = get_img_html("assets/GENMED.png")
     icon_html_live = get_img_html("assets/GENMED_LIVE.png")
     icon_html_xai = get_img_html("assets/GENMED_XAI.png")
@@ -714,11 +748,11 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
         with gr.Column():
             status = gr.Markdown("## ⚪ System Status: Idle", height=150, max_height=150)
 
-            with gr.Tab("Configuration Setting"):
+            with gr.Tab("Configuration"):
                 gr.Markdown("## ⚙️ Engine Setup")
                 model_select = gr.Dropdown(
                     choices=list(MODEL_OPTIONS.keys()),
-                    label="Select Model / Adapter Configuration",
+                    label="Select Model",
                     value=list(MODEL_OPTIONS.keys())[7],
                     filterable=False
                 )
@@ -736,9 +770,9 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
                 reset_btn = gr.Button("⚠️ Reset System (Clear Memory)", variant="stop")
 
             with gr.Tab("Inference"):
-                gr.Markdown("## 🔍 Inference")
+                gr.Markdown("## 🔍 Database Inference")
 
-                with gr.Accordion("Database Inference", open=True):
+                with gr.Accordion("Database Index", open=True):
                     dataset_input = gr.Dropdown(["VQA-RAD", "SLAKE"], value="VQA-RAD", label="Dataset")
                     idx_input = gr.Number(
                         value=0,
@@ -747,12 +781,12 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
                         minimum=0,
                     )
 
-                run_btn = gr.Button("🚀 Run Inference", variant="secondary")
+                run_btn = gr.Button("🚀 Run DB Inference", variant="secondary")
                 xai_btn = gr.Button("⚡ Run XAI Analysis", variant="secondary")
                 judge_btn = gr.Button("⚖️ Run LLM Judge Evaluation", variant="secondary")
 
     with gr.Tab("Live Diagnostic"):
-        gr.Markdown(f"## {icon_html_live} Live Diagnostic ChatBot")
+        gr.Markdown(f"## {icon_html_live} Live Diagnosis ChatBot")
         gr.Markdown("---")
         with gr.Column():
             gr.Markdown(f"## {icon_html_xai} XAI Dashboard")
@@ -1175,6 +1209,7 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
         run_xai,
         inputs=[prediction_state],
         outputs=[
+            status,
             attention_out, occlusion_out, concept_rpt_zs_out, concept_rpt_nc_out, cf_visual_out, cf_visual_report_out,
             att_body, att_state, att_btn,
             occ_body, occ_state, occ_btn,
@@ -1207,6 +1242,7 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
         run_llm_judge,
         inputs=[prediction_state],
         outputs=[
+            status,
             reflex_judge_report_out, rag_judge_summary_out, *rag_verdict_boxes,
             ref_rpt_body, ref_rpt_state, ref_rpt_btn,
             rag_rpt_body, rag_rpt_state, rag_rpt_btn,
