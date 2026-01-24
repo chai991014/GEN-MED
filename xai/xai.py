@@ -311,7 +311,7 @@ class RetrievalCounterfactual:
     is relevant to the user's question.
     """
 
-    def __init__(self, inference_engine, csv_path="medical_concepts_stats_processed.csv"):
+    def __init__(self, inference_engine, csv_path="./xai/medical_concepts_stats_processed.csv"):
         self.engine = inference_engine  # This gives access to the RAG retriever
         self.vocab = set()
 
