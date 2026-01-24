@@ -686,6 +686,7 @@ class RAGJudge:
         self.api_key = api_key
         if not self.api_key:
             self.model = None
+            self.model_backup = None
         else:
             try:
                 genai.configure(api_key=self.api_key)
@@ -693,6 +694,10 @@ class RAGJudge:
                     "response_mime_type": "application/json"
                 }
                 self.model = genai.GenerativeModel(
+                    "gemini-3-flash-preview",
+                    generation_config=self.generation_config
+                )
+                self.model_backup = genai.GenerativeModel(
                     "gemini-2.5-flash",
                     generation_config=self.generation_config
                 )
@@ -815,6 +820,25 @@ class RAGJudge:
                 if attempt < max_retries - 1:
                     continue
 
-        print(f"❌ All {max_retries} attempts failed.")
+        print(f"❌ All {max_retries} for Gemini 3 Flash attempts failed. Fallback to Gemini 2.5 Flash.")
+        for attempt in range(max_retries):
+            try:
+                response = self.model_backup.generate_content(contents)
+                raw_text = response.text
+
+                # Clean Markdown (Gemini often adds ```json)
+                clean_text = re.sub(r"```json|```", "", raw_text).strip()
+
+                data = json.loads(clean_text)
+                summary = data.get("summary", "No summary provided.")
+
+                return data, summary
+
+            except Exception as e:
+                print(f"Attempt {attempt + 1}/{max_retries} Multimodal Judge Error: {e}")
+                if attempt < max_retries - 1:
+                    continue
+
+        print(f"❌ All {max_retries} for Gemini 2.5 Flash attempts failed.")
         fallback_data = {"items": [{"verdict": "ERROR", "visual_check": "N/A", "semantic_check": "N/A", "reasoning": "API Error"} for _ in range(len(rag_items))]}
         return fallback_data, f"❌ All {max_retries} attempts failed."
