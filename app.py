@@ -457,11 +457,20 @@ def run_live_inference(image, chat_history):
 
     message = chat_history[-1]["content"] if chat_history else ""
 
+    empty_rag = [gr.update(visible=False), None, None, gr.update(visible=False)] * MAX_RAG_K
+    closed_acc = get_closed_acc()
+
     if inference_engine is None or LOADED_CONFIG is None:
-        return chat_history + [{"role": "assistant", "content": "⚠️ Error: Engine not initialized. Please select a model and click Initialize Engine."}], None
+        return (
+            chat_history + [{"role": "assistant", "content": "⚠️ Error: Engine not initialized. Please select a model and click Initialize Engine."}],
+            None, "", "No retrieval", *empty_rag, *empty_rag, *closed_acc, *closed_acc, *closed_acc
+        )
 
     if image is None:
-        return chat_history + [{"role": "assistant", "content": "⚠️ Error: Please upload an image first."}], None
+        return (
+            chat_history + [{"role": "assistant", "content": "⚠️ Error: Please upload an image first."}],
+            None, "", "No retrieval", *empty_rag, *empty_rag, *closed_acc, *closed_acc, *closed_acc
+        )
 
     try:
         # Prepare Context from History
@@ -534,6 +543,32 @@ def run_live_inference(image, chat_history):
 
         pred_text = res['prediction']
 
+        # Reflexion Text Output
+        reflex_intermediate_output = ""
+        if LOADED_CONFIG['reflexion']:
+            reflex_intermediate_output = f"### **Draft**\n- {draft_text}\n### **Critique**\n- {critique_text}"
+        else:
+            reflex_intermediate_output = "None (Reflexion Disabled)"
+
+        # RAG Item Outputs
+        retrieval_log = f"Retrieved Indices: {retrieved_ids}" if retrieved_ids else "None (RAG Disabled)"
+        live_stk_rag_updates = []
+        live_stk_aud_rag_updates = []
+
+        for i in range(MAX_RAG_K):
+            if retrieved_ids and i < len(retrieved_ids):
+                r_item = saved_rag_items[i]
+                r_txt = f"### **Question**\n- {r_item['q']}\n\n### **Ground Truth**\n- {r_item['a']}"
+                live_stk_rag_updates.extend([gr.update(visible=True), r_item['img'], r_txt, gr.update(value="", visible=True)])
+                live_stk_aud_rag_updates.extend([gr.update(visible=True), r_item['img'], r_txt, gr.update(value="", visible=True)])
+            else:
+                live_stk_rag_updates.extend([gr.update(visible=False), None, None, gr.update(visible=False)])
+                live_stk_aud_rag_updates.extend([gr.update(visible=False), None, None, gr.update(visible=False)])
+
+        # Accordion Visibility States
+        ref_updates = get_open_acc() if LOADED_CONFIG['reflexion'] else closed_acc
+        rag_updates_acc = get_open_acc() if retrieved_ids else closed_acc
+
         # Update History
         new_history = chat_history + [{"role": "assistant", "content": pred_text}]
 
@@ -548,12 +583,18 @@ def run_live_inference(image, chat_history):
             "rag_items": saved_rag_items
         }
 
-        return new_history, state_data
+        return (
+            new_history,
+            state_data, reflex_intermediate_output, retrieval_log, *live_stk_rag_updates, *live_stk_aud_rag_updates, *ref_updates, *rag_updates_acc, *rag_updates_acc
+        )
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return chat_history + [{"role": "assistant", "content": f"❌ Error: {str(e)}"}], None
+        return (
+            chat_history + [{"role": "assistant", "content": f"❌ Error: {str(e)}"}],
+            None, "", "Error", *empty_rag, *empty_rag, *closed_acc, *closed_acc, *closed_acc
+        )
 
 
 def run_xai(state_data):
@@ -570,17 +611,20 @@ def run_xai(state_data):
         return (
             error_msg,
             None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
+            None, None, None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
             None, None, None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc
         )
 
     if not state_data:
         error_msg = f"""
             ## ⚠️ **Error:** Action Required.\n
-            Please run **DB Inference** first.
+            Please run **DB Inference** first.\n
+            If you are using **Live Diagnostic**, please upload an image and ask a question.
         """
         return (
             error_msg,
             None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
+            None, None, None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
             None, None, None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc
         )
 
@@ -657,14 +701,41 @@ def run_xai(state_data):
     cf_updates = get_open_acc() if cf_visual_img is not None else closed_acc
     stk_aud_vis_updates = get_open_acc() if img_att is not None or img_occ is not None else closed_acc
 
-    return (
-        valid_status,
+    is_live = "Live Diagnostic" in state_data.get("gt", "")
+
+    empty_img = None
+    empty_txt = ""
+    empty_xai_deep = (
+        empty_img, empty_img, empty_txt, empty_txt, empty_img, empty_txt,
+        *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc
+    )
+    empty_xai_stk = (
+        empty_img, empty_img, empty_img, empty_img, empty_txt, empty_txt, empty_img, empty_txt,
+        *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc
+    )
+    active_deep = (
         img_att, img_occ, concept_rpt_zs, concept_rpt_nc, cf_visual_img, cf_visual_rpt,
-        *att_updates, *occ_updates, *zs_updates, *nc_updates, *cf_updates,
-        img_att, img_occ, img_att, img_occ,
-        concept_rpt_zs, concept_rpt_nc, cf_visual_img, cf_visual_rpt,
+        *att_updates, *occ_updates, *zs_updates, *nc_updates, *cf_updates
+    )
+    active_stk = (
+        img_att, img_occ, img_att, img_occ, concept_rpt_zs, concept_rpt_nc, cf_visual_img, cf_visual_rpt,
         *att_updates, *occ_updates, *stk_aud_vis_updates, *zs_updates, *nc_updates, *cf_updates
     )
+
+    if is_live:
+        return (
+            valid_status,
+            *empty_xai_deep,    # Deep Analysis (DB)
+            *empty_xai_stk,     # Stakeholder (DB)
+            *active_stk         # Stakeholder (Live)
+        )
+    else:
+        return (
+            valid_status,
+            *active_deep,       # Deep Analysis (DB)
+            *active_stk,        # Stakeholder (DB)
+            *empty_xai_stk      # Stakeholder (Live)
+        )
 
 
 def run_llm_judge(state_data):
@@ -682,17 +753,20 @@ def run_llm_judge(state_data):
         return (
             error_msg,
             error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc,
+            error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc,
             error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc
         )
 
     if not state_data:
         error_msg = f"""
             ## ⚠️ **Error:** Action Required.\n
-            Please run **DB Inference** first.
+            Please run **DB Inference** first.\n
+            If you are using **Live Diagnostic**, please upload an image and ask a question.
         """
         return (
             error_msg,
             error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc,
+            error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc,
             error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc
         )
 
@@ -772,12 +846,29 @@ def run_llm_judge(state_data):
     ref_judge_updates = get_open_acc() if "Reflexion disabled" not in reflexion_report else closed_acc
     rag_judge_updates = get_open_acc() if "No RAG items" not in rag_summary_text else closed_acc
 
-    # RETURN BOTH REPORTS
-    return (
-        valid_status,
-        reflexion_report, rag_summary_text, *rag_item_updates_deep, *ref_judge_updates, *rag_judge_updates,
-        reflexion_report, rag_summary_text, *rag_item_updates_stk, *ref_judge_updates, *rag_judge_updates, *rag_judge_updates
-    )
+    is_live = "Live Diagnostic" in state_data.get("gt", "")
+
+    empty_txt = ""
+    empty_deep = (empty_txt, empty_txt, *[gr.update(value="", visible=False) for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc)
+    empty_stk = (empty_txt, empty_txt, *[gr.update(value="", visible=False) for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc)
+
+    active_deep = (reflexion_report, rag_summary_text, *rag_item_updates_deep, *ref_judge_updates, *rag_judge_updates)
+    active_stk = (reflexion_report, rag_summary_text, *rag_item_updates_stk, *ref_judge_updates, *rag_judge_updates, *rag_judge_updates)
+
+    if is_live:
+        return (
+            valid_status,
+            *empty_deep,    # Deep Analysis (DB)
+            *empty_stk,     # Stakeholder (DB)
+            *active_stk     # Stakeholder (Live)
+        )
+    else:
+        return (
+            valid_status,
+            *active_deep,   # Deep Analysis (DB)
+            *active_stk,    # Stakeholder (DB)
+            *empty_stk      # Stakeholder (Live)
+        )
 
 
 def reset_system():
@@ -891,17 +982,17 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
                 judge_btn = gr.Button("⚖️ Run LLM Judge Evaluation", variant="secondary")
 
     with gr.Tab("Live Diagnostic"):
-        gr.Markdown(f"## {icon_html_live} Live Diagnosis ChatBot")
+        gr.Markdown(f"## {icon_html_live} Live Diagnostic ChatBot")
         gr.Markdown("---")
         with gr.Row():
             # Left: Image Upload
             with gr.Column(scale=1):
-                gr.Markdown("### 1. Upload Medical Scan")
+                gr.Markdown("### 1. Medical Scan")
                 live_img_input = gr.Image(type="pil", label="Upload X-Ray/CT/MRI", height=350)
 
             # Right: Chat Interface
             with gr.Column(scale=2):
-                gr.Markdown("### 2. Diagnostic Chat")
+                gr.Markdown("### 2. Chat History")
                 chatbot = gr.Chatbot(height=350, show_label=False)
                 with gr.Row():
                     with gr.Column(scale=4, min_width=0):
@@ -913,6 +1004,191 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
             with gr.Column():
                 gr.Markdown(f"## {icon_html_xai} XAI Dashboard")
                 gr.Markdown("---")
+
+                # LIVE STAKEHOLDER TABS
+                with gr.Tab("Stakeholder Perspectives (Live)"):
+                    gr.Markdown("## 👥 Multi-Stakeholder Explainability")
+                    gr.Markdown(
+                        "Select a stakeholder tab to see the specific Question & Answer relevant to their role based on the latest Chat response."
+                    )
+                    gr.Markdown("---")
+
+                    # STAKEHOLDER 1: CLINICAL SPECIALIST
+                    with gr.Tab("👨‍⚕️ Clinical Specialist"):
+                        gr.Markdown(
+                            "### ❓ Stakeholder Question: *'Is the model focusing on valid pathological features or image artifacts?'*"
+                        )
+                        with gr.Row():
+                            with gr.Column():
+                                live_stk_att_head, live_stk_att_body, live_stk_att_state, live_stk_att_btn = create_md_accordion(
+                                    "### 👁️ Intrinsic Attention (White-Box)",
+                                    initial_visible=False
+                                )
+                                with live_stk_att_body:
+                                    gr.Markdown(
+                                        "**Answer:** The heatmap above shows the model's raw attention weights.",
+                                        container=True
+                                    )
+                                    live_stk_attention_out = gr.Image(type="pil", height=350, show_label=False, interactive=False)
+
+                            with gr.Column():
+                                live_stk_occ_head, live_stk_occ_body, live_stk_occ_state, live_stk_occ_btn = create_md_accordion(
+                                    "### 🧱 Occlusion Sensitivity (Causal)",
+                                    initial_visible=False
+                                )
+                                with live_stk_occ_body:
+                                    gr.Markdown(
+                                        "**Answer:** Red regions indicate pixels that *caused* the diagnosis.",
+                                        container=True
+                                    )
+                                    live_stk_occlusion_out = gr.Image(type="pil", height=350, show_label=False, interactive=False)
+
+                    # STAKEHOLDER 2: JUNIOR PRACTITIONER
+                    with gr.Tab("🎓 Junior Practitioner"):
+                        gr.Markdown(
+                            "### ❓ Stakeholder Question: *'What historical evidence or similar cases support this diagnosis?'*"
+                        )
+
+                        live_stk_cf_head, live_stk_cf_body, live_stk_cf_state, live_stk_cf_btn = create_md_accordion(
+                            "### 🔄 Visual Counterfactual (Differential Diagnosis)",
+                            initial_visible=False
+                        )
+                        with live_stk_cf_body:
+                            with gr.Row():
+                                gr.Markdown(
+                                    "**Answer:** This compares the current patient to a similar historical case with the *opposite* outcome.",
+                                    container=True
+                                )
+                            with gr.Row():
+                                with gr.Column(scale=1):
+                                    live_stk_cf_visual_out = gr.Image(type="pil", height=350, label="Nearest 'Opposite' Case", interactive=False)
+                                with gr.Column(scale=2):
+                                    live_stk_cf_visual_report_out = gr.Markdown(container=True)
+
+                        live_stk_rag_head, live_stk_rag_body, live_stk_rag_state, live_stk_rag_btn = create_md_accordion(
+                            "### 📚 Retrieved Case Precedents (RAG)",
+                            initial_visible=False
+                        )
+                        with live_stk_rag_body:
+                            live_stk_retrieval_log_out = gr.Textbox(show_label=False, lines=1, max_lines=1, label="Retrieval IDs")
+                            gr.Markdown(
+                                "**Answer:** These are the verified historical cases the AI retrieved.",
+                                container=True
+                            )
+                            live_stk_rag_atomic_components = []
+                            for i in range(MAX_RAG_K):
+                                with gr.Row(visible=False, variant="panel") as r:
+                                    with gr.Column(scale=1):
+                                        r_img = gr.Image(type="pil", label=f"Case #{i + 1}", height=250)
+                                    with gr.Column(scale=1):
+                                        r_txt = gr.Markdown(height=250, container=True)
+                                    with gr.Column(scale=1, visible=False):
+                                        r_eval = gr.Markdown()
+                                live_stk_rag_atomic_components.extend([r, r_img, r_txt, r_eval])
+
+                    # STAKEHOLDER 3: PATIENT
+                    with gr.Tab("🏥 Patient / Non-Specialist"):
+                        gr.Markdown(
+                            "### ❓ Stakeholder Question: *'What did the AI find in simple, understandable terms?'*"
+                        )
+                        with gr.Row():
+                            with gr.Column():
+                                live_stk_zs_head, live_stk_zs_body, live_stk_zs_state, live_stk_zs_btn = create_md_accordion(
+                                    "### 📊 Concept Detection (Zero-Shot)",
+                                    initial_visible=False
+                                )
+                                with live_stk_zs_body:
+                                    gr.Markdown(
+                                        "**Answer:** These bars show how strongly the image activates specific medical concepts.",
+                                        container=True
+                                    )
+                                    live_stk_concept_zs_out = gr.Markdown(container=True)
+
+                            with gr.Column():
+                                live_stk_nc_head, live_stk_nc_body, live_stk_nc_state, live_stk_nc_btn = create_md_accordion(
+                                    "### 🧬 Similar Case Consensus",
+                                    initial_visible=False
+                                )
+                                with live_stk_nc_body:
+                                    gr.Markdown(
+                                        "**Answer:** This shows the most common diagnoses found in 50 other patients who looked similar to you.",
+                                        container=True
+                                    )
+                                    live_stk_concept_nc_out = gr.Markdown(container=True)
+
+                    # STAKEHOLDER 4: AUDITOR
+                    with gr.Tab("⚖️ Auditor / Regulator"):
+                        gr.Markdown(
+                            "### ❓ Stakeholder Question: *'Did the system follow safety protocols and verify its data?'*"
+                        )
+
+                        live_stk_aud_vis_head, live_stk_aud_vis_body, live_stk_aud_vis_state, live_stk_aud_vis_btn = create_md_accordion(
+                            "### 👁️ Traceability: Visual Audit Trail",
+                            initial_visible=False
+                        )
+                        with live_stk_aud_vis_body:
+                            gr.Markdown(
+                                "**Answer:** These saliency maps provide an immutable audit trail.",
+                                container=True
+                            )
+                            with gr.Row():
+                                live_stk_aud_att_out = gr.Image(type="pil", height=350, label="Intrinsic Attention", interactive=False)
+                                live_stk_aud_occ_out = gr.Image(type="pil", height=350, label="Occlusion Sensitivity", interactive=False)
+
+                        live_stk_ref_res_head, live_stk_ref_res_body, live_stk_ref_res_state, live_stk_ref_res_btn = create_md_accordion(
+                            "### 🧠 Self-Correction Trace (Reflexion)",
+                            initial_visible=False
+                        )
+                        with live_stk_ref_res_body:
+                            gr.Markdown(
+                                "**Answer:** This trace demonstrates the model's self-correction capability.",
+                                container=True
+                            )
+                            live_stk_reflex_out = gr.Markdown(container=True)
+
+                        live_stk_ref_rpt_head, live_stk_ref_rpt_body, live_stk_ref_rpt_state, live_stk_ref_rpt_btn = create_md_accordion(
+                            "### ✅ Reasoning Audit (LLM Judge)",
+                            initial_visible=False
+                        )
+                        with live_stk_ref_rpt_body:
+                            gr.Markdown(
+                                "**Answer:** Independent evaluation certifying the logic is sound.",
+                                container=True
+                            )
+                            live_stk_ref_judge_out = gr.Markdown(container=True)
+
+                        live_stk_rag_rpt_head, live_stk_rag_rpt_body, live_stk_rag_rpt_state, live_stk_rag_rpt_btn = create_md_accordion(
+                            "### 🛡️ Data Integrity Audit (RAG Judge)",
+                            initial_visible=False
+                        )
+                        with live_stk_rag_rpt_body:
+                            gr.Markdown(
+                                "**Answer:** Summary of external data reliability.",
+                                container=True
+                            )
+                            live_stk_rag_judge_out = gr.Markdown(container=True)
+
+                        live_stk_audit_head, live_stk_audit_body, live_stk_audit_state, live_stk_audit_btn = create_md_accordion(
+                            "### 📋 Data Integrity: Detailed Verification Logs",
+                            initial_visible=False
+                        )
+                        with live_stk_audit_body:
+                            gr.Markdown(
+                                "**Answer:** This itemized log provides a granular verification.",
+                                container=True
+                            )
+                            live_stk_audit_rag_atomic_components = []
+                            live_stk_audit_verdict_boxes = []
+                            for i in range(MAX_RAG_K):
+                                with gr.Row(visible=False, variant="panel") as r:
+                                    with gr.Column(scale=1):
+                                        r_img = gr.Image(type="pil", label=f"Item {i + 1}", height=200)
+                                    with gr.Column(scale=1):
+                                        r_txt = gr.Markdown(height=200, container=True)
+                                    with gr.Column(scale=1):
+                                        r_eval = gr.Markdown(container=True)
+                                live_stk_audit_rag_atomic_components.extend([r, r_img, r_txt, r_eval])
+                                live_stk_audit_verdict_boxes.append(r_eval)
 
     with gr.Tab("Database Dashboard"):
         gr.Markdown(f"## {icon_html_xai} XAI Dashboard (DATABASE)")
@@ -1347,7 +1623,16 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
     ).then(
         run_live_inference,
         inputs=[live_img_input, live_chat_history],
-        outputs=[live_chat_history, prediction_state]
+        outputs=[
+            live_chat_history,
+            prediction_state,
+            live_stk_reflex_out, live_stk_retrieval_log_out,
+            *live_stk_rag_atomic_components,
+            *live_stk_audit_rag_atomic_components,
+            live_stk_ref_res_body, live_stk_ref_res_state, live_stk_ref_res_btn,
+            live_stk_rag_body, live_stk_rag_state, live_stk_rag_btn,
+            live_stk_audit_body, live_stk_audit_state, live_stk_audit_btn
+        ]
     ).then(
         lambda h: h,  # Update chat window
         inputs=[live_chat_history],
@@ -1381,7 +1666,7 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
             nc_body, nc_state, nc_btn,
             cf_body, cf_state, cf_btn,
 
-            # Stakeholder Analysis
+            # Stakeholder Analysis (Database Tab)
             stk_attention_out, stk_occlusion_out, stk_aud_att_out, stk_aud_occ_out,
             stk_concept_zs_out, stk_concept_nc_out, stk_cf_visual_out, stk_cf_visual_report_out,
             stk_att_body, stk_att_state, stk_att_btn,
@@ -1389,7 +1674,17 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
             stk_aud_vis_body, stk_aud_vis_state, stk_aud_vis_btn,
             stk_zs_body, stk_zs_state, stk_zs_btn,
             stk_nc_body, stk_nc_state, stk_nc_btn,
-            stk_cf_body, stk_cf_state, stk_cf_btn
+            stk_cf_body, stk_cf_state, stk_cf_btn,
+
+            # Stakeholder Analysis (Live Tab)
+            live_stk_attention_out, live_stk_occlusion_out, live_stk_aud_att_out, live_stk_aud_occ_out,
+            live_stk_concept_zs_out, live_stk_concept_nc_out, live_stk_cf_visual_out, live_stk_cf_visual_report_out,
+            live_stk_att_body, live_stk_att_state, live_stk_att_btn,
+            live_stk_occ_body, live_stk_occ_state, live_stk_occ_btn,
+            live_stk_aud_vis_body, live_stk_aud_vis_state, live_stk_aud_vis_btn,
+            live_stk_zs_body, live_stk_zs_state, live_stk_zs_btn,
+            live_stk_nc_body, live_stk_nc_state, live_stk_nc_btn,
+            live_stk_cf_body, live_stk_cf_state, live_stk_cf_btn
         ]
     ).then(
         fn=unlock_interface,
@@ -1411,11 +1706,17 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
             ref_rpt_body, ref_rpt_state, ref_rpt_btn,
             rag_rpt_body, rag_rpt_state, rag_rpt_btn,
 
-            # Stakeholder Judge Outputs
+            # Stakeholder Judge Outputs (Database Tab)
             stk_ref_judge_out, stk_rag_judge_out, *stk_audit_verdict_boxes,
             stk_ref_rpt_body, stk_ref_rpt_state, stk_ref_rpt_btn,
             stk_rag_rpt_body, stk_rag_rpt_state, stk_rag_rpt_btn,
-            stk_audit_body, stk_audit_state, stk_audit_btn
+            stk_audit_body, stk_audit_state, stk_audit_btn,
+
+            # Stakeholder Judge Outputs (Live Tab)
+            live_stk_ref_judge_out, live_stk_rag_judge_out, *live_stk_audit_verdict_boxes,
+            live_stk_ref_rpt_body, live_stk_ref_rpt_state, live_stk_ref_rpt_btn,
+            live_stk_rag_rpt_body, live_stk_rag_rpt_state, live_stk_rag_rpt_btn,
+            live_stk_audit_body, live_stk_audit_state, live_stk_audit_btn
         ]
     ).then(
         fn=unlock_interface,
