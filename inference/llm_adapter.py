@@ -98,12 +98,16 @@ class LLaVAAdapter(BaseVQAAdapter):
             print(f"❌ Error: {e}")
             sys.exit(1)
 
-    def _run_inference(self, image, prompt, max_tokens=128):
+    def _run_inference(self, image, prompt, max_tokens=128, do_sample=False, temperature=1.0):
 
         # print(f"   [DEBUG] Start Inference...", end=" ", flush=True)
         image_tensor = self.image_processor.preprocess(image, return_tensors='pt')['pixel_values'].half().cuda()
-        input_ids = self.tokenizer_image_token(prompt, self.tokenizer, self.idx,
-                                               return_tensors='pt').unsqueeze(0).cuda()
+        input_ids = self.tokenizer_image_token(
+            prompt,
+            self.tokenizer,
+            self.idx,
+            return_tensors='pt'
+        ).unsqueeze(0).cuda()
         # attention_mask = torch.ones_like(input_ids, device="cuda")
 
         attention_mask = (input_ids != self.tokenizer.pad_token_id).long()
@@ -116,7 +120,8 @@ class LLaVAAdapter(BaseVQAAdapter):
                 images=image_tensor,
                 attention_mask=attention_mask,
                 pad_token_id=self.tokenizer.pad_token_id,
-                do_sample=False,
+                do_sample=do_sample,
+                temperature=temperature,
                 max_new_tokens=max_tokens,
                 use_cache=True
             )
@@ -125,7 +130,7 @@ class LLaVAAdapter(BaseVQAAdapter):
         # print("Done!", flush=True)
         return result
 
-    def generate(self, image, question, context=""):
+    def generate(self, image, question, context="", do_sample=False, temperature=1.0):
         if self.prompt == "Basic":
             text = get_inference_prompt(question, context)
         elif self.prompt == "Instruct":
@@ -134,7 +139,7 @@ class LLaVAAdapter(BaseVQAAdapter):
             text = question
         qs = self.tok_img + "\n" + text
         prompt = f"USER: {qs}\nASSISTANT:"
-        prediction = self._run_inference(image, prompt, max_tokens=128)
+        prediction = self._run_inference(image, prompt, max_tokens=128, do_sample=do_sample, temperature=temperature)
         return {"prediction": prediction}
 
 
@@ -174,7 +179,7 @@ class QwenAdapter(BaseVQAAdapter):
         self.processor = AutoProcessor.from_pretrained(self.model_id, min_pixels=256*256, max_pixels=1280*1280)
         print("✅ Qwen loaded!")
 
-    def _run_inference(self, image, text_prompt, max_tokens=128):
+    def _run_inference(self, image, text_prompt, max_tokens=128, do_sample=False, temperature=1.0):
         from qwen_vl_utils import process_vision_info
         # print("\n" + "=" * 60)
         # print(text_prompt)
@@ -183,24 +188,37 @@ class QwenAdapter(BaseVQAAdapter):
             {"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": text_prompt}]}]
         text_input = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         image_inputs, video_inputs = process_vision_info(messages)
-        inputs = self.processor(text=[text_input], images=image_inputs, videos=video_inputs, padding=True,
-                                return_tensors="pt").to("cuda")
+        inputs = self.processor(
+            text=[text_input],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt"
+        ).to("cuda")
 
         with torch.inference_mode():
-            ids = self.model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
+            ids = self.model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                do_sample=do_sample,
+                temperature=temperature
+            )
 
         ids_trimmed = [out[len(inp):] for inp, out in zip(inputs.input_ids, ids)]
-        return self.processor.batch_decode(ids_trimmed, skip_special_tokens=True,
-                                           clean_up_tokenization_spaces=False)[0].strip()
+        return self.processor.batch_decode(
+            ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False
+        )[0].strip()
 
-    def generate(self, image, question, context=""):
+    def generate(self, image, question, context="", do_sample=False, temperature=1.0):
         if self.prompt == "Basic":
             text = get_inference_prompt(question, context)
         elif self.prompt == "Instruct":
             text = get_instruct_inference_prompt(question, context)
         else:
             text = question
-        prediction = self._run_inference(image, text, max_tokens=128)
+        prediction = self._run_inference(image, text, max_tokens=128, do_sample=do_sample, temperature=temperature)
         return {"prediction": prediction}
 
 

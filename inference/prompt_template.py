@@ -4,17 +4,22 @@ def get_inference_prompt(question, context=""):
     Used by: llm_adapter.generate, rag_pipeline.generate
     """
     if context:
-        if "Reference Examples:" in context:
+        if "Previous Conversation:" in context:
+            return f"{context}\nUser: {question}\nAssistant:"
+
+        elif "Reference Examples:" in context:
             return (
                 f"{context}\n"
                 f"Based on the examples above and the image, answer this:\n"
                 f"Question: {question}"
             )
-        return (
-            f"{context}\n"
-            f"Based on the hypothesis above and the image, answer this:\n"
-            f"Question: {question}"
-        )
+
+        else:
+            return (
+                f"{context}\n"
+                f"Based on the hypothesis above and the image, answer this:\n"
+                f"Question: {question}"
+            )
     return question
 
 
@@ -39,8 +44,24 @@ def get_instruct_inference_prompt(question, context=""):
 
     # 3. Dynamic Context Handling
     if context:
-        # heuristic: Check if context is RAG Examples or Reflexion History
-        if "Reference Examples:" in context:
+
+        if "Previous Conversation:" in context:
+            system_instruction = (
+                "You are an expert medical AI assistant. Your task is to analyze the provided "
+                "medical image and assist the user with their questions in a polite, conversational manner."
+            )
+            connector = (
+                "Instructions: Use the conversation history and reference examples (if any) above "
+                "to answer the user's latest question with a helpful, conversational explanation."
+            )
+            return (
+                f"{system_instruction}\n\n"
+                f"{context}\n\n"
+                f"{connector}\n"
+                f"User: {question}\n"
+                f"Assistant:"
+            )
+        elif "Reference Examples:" in context:
             # Case A: RAG Context
             connector = (
                 "Instructions: The examples above are for reference style only. "
@@ -108,16 +129,28 @@ def get_reflexion_critique_context(question, rag_context=""):
     return base_context
 
 
-def get_reflexion_refine_prompt(question, draft_answer, critique_response):
+def get_reflexion_refine_prompt(question, draft_answer, critique_response, is_chat=False):
     """
     Refine the answer based on critique.
     """
+    if is_chat:
+        # Chatbot persona: Explanatory and conversational
+        instruction = (
+            f"Instruction: Based on the image and the critique above, provide the final answer to the user. "
+            f"Please explain your reasoning clearly and conversationally. Do not just output single words."
+        )
+    else:
+        # Database persona: Strict and concise
+        instruction = (
+            f"Instruction: Based on the image and the critique above, provide the corrected final answer. "
+            f"If the critique confirmed the hypothesis, repeat the hypothesis concisely. "
+            f"If errors were found, correct them."
+        )
+
     return (
         f"Task: Final Diagnosis.\n"
         f"Original Question: '{question}'\n"
         f"Initial Hypothesis: '{draft_answer}'\n"
         f"Visual Critique: '{critique_response}'\n\n"
-        f"Instruction: Based on the image and the critique above, provide the corrected final answer. "
-        f"If the critique confirmed the hypothesis, repeat the hypothesis concisely. "
-        f"If errors were found, correct them."
+        f"{instruction}"
     )

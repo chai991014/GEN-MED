@@ -452,6 +452,110 @@ def run_database_inference(dataset_input, idx, model_key, use_rag, use_reflexion
         return f"## ❌ **System Error:** {str(e)}", *reset_results[1:]
 
 
+def run_live_inference(image, chat_history):
+    global inference_engine, LOADED_CONFIG
+
+    message = chat_history[-1]["content"] if chat_history else ""
+
+    if inference_engine is None or LOADED_CONFIG is None:
+        return chat_history + [{"role": "assistant", "content": "⚠️ Error: Engine not initialized. Please select a model and click Initialize Engine."}], None
+
+    if image is None:
+        return chat_history + [{"role": "assistant", "content": "⚠️ Error: Please upload an image first."}], None
+
+    try:
+        # Prepare Context from History
+        history_context = "Previous Conversation:\n"
+        if len(chat_history) > 1:
+            for msg in chat_history[:-1]:
+                role_label = "User" if msg["role"] == "user" else "Assistant"
+                history_context += f"{role_label}: {msg['content']}\n"
+        else:
+            history_context += "(No previous history - Start of diagnostic session)\n"
+
+        # Determine Adapter and Handle RAG manually
+        # This ensures we can pass BOTH the history and the RAG context
+        active_adapter = inference_engine
+        rag_context = ""
+        saved_rag_items = []
+        retrieved_ids = []
+
+        if hasattr(inference_engine, 'retriever') and LOADED_CONFIG['rag']:
+            # It is RAGPipeline -> Manual Retrieve to preserve pipeline capability
+            rag_context, retrieved_ids, scores = inference_engine._retrieve_context(image, message)
+            active_adapter = inference_engine.llm
+        elif hasattr(inference_engine, 'llm'):
+            active_adapter = inference_engine.llm
+
+        # Load RAG items for State (For XAI)
+        if retrieved_ids:
+            # We assume training data is VQA-RAD for retrieval (as per engine config)
+            ds_rad = load_dataset("flaviagiammarino/vqa-rad", split="train")
+            for r_id in retrieved_ids:
+                item = ds_rad[int(r_id)]
+                saved_rag_items.append({
+                    "img": item['image'].convert("RGB"),
+                    "q": item['question'],
+                    "a": str(item['answer'])
+                })
+
+        # Combine Contexts
+        final_context = f""
+        if rag_context:
+            final_context += f"{rag_context}\n"
+        if history_context:
+            final_context += f"{history_context}"
+
+        # Generate Response
+        draft_text = "N/A (Reflexion Disabled)"
+        critique_text = "N/A (Reflexion Disabled)"
+
+        if LOADED_CONFIG['reflexion']:
+            # Use Reflexion Loop with combined context
+            from inference.prompt_template import get_reflexion_critique_prompt, get_reflexion_critique_context, get_reflexion_refine_prompt
+
+            # Draft
+            draft_dict = active_adapter.generate(image, message, context=final_context)
+            draft_text = draft_dict["prediction"]
+
+            # Critique
+            critique_prompt = get_reflexion_critique_prompt(draft_text)
+            critique_context = get_reflexion_critique_context(message, rag_context)
+            critique_dict = active_adapter.generate(image, critique_prompt, context=critique_context)
+            critique_text = critique_dict["prediction"]
+
+            # Refine
+            refine_prompt = get_reflexion_refine_prompt(message, draft_text, critique_text, is_chat=True)
+            refine_context = f"{final_context}\n\n{refine_prompt}"
+            res = active_adapter.generate(image, message, context=refine_context, do_sample=True, temperature=1.0)
+        else:
+            # Standard Generation
+            res = active_adapter.generate(image, message, context=final_context, do_sample=True, temperature=1.0)
+
+        pred_text = res['prediction']
+
+        # Update History
+        new_history = chat_history + [{"role": "assistant", "content": pred_text}]
+
+        # Update State for XAI Integration
+        state_data = {
+            "image": image,
+            "question": message,
+            "gt": "N/A (Live Diagnostic)",
+            "prediction": pred_text,
+            "draft": draft_text,
+            "critique": critique_text,
+            "rag_items": saved_rag_items
+        }
+
+        return new_history, state_data
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return chat_history + [{"role": "assistant", "content": f"❌ Error: {str(e)}"}], None
+
+
 def run_xai(state_data):
     global inference_engine, LOADED_CONFIG
 
@@ -737,6 +841,7 @@ def reset_system():
 with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
     last_loaded_state = gr.State(None)
     prediction_state = gr.State(None)
+    live_chat_history = gr.State([])
     icon_html = get_img_html("assets/GENMED.png")
     icon_html_live = get_img_html("assets/GENMED_LIVE.png")
     icon_html_xai = get_img_html("assets/GENMED_XAI.png")
@@ -788,9 +893,26 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
     with gr.Tab("Live Diagnostic"):
         gr.Markdown(f"## {icon_html_live} Live Diagnosis ChatBot")
         gr.Markdown("---")
-        with gr.Column():
-            gr.Markdown(f"## {icon_html_xai} XAI Dashboard")
-            gr.Markdown("---")
+        with gr.Row():
+            # Left: Image Upload
+            with gr.Column(scale=1):
+                gr.Markdown("### 1. Upload Medical Scan")
+                live_img_input = gr.Image(type="pil", label="Upload X-Ray/CT/MRI", height=350)
+
+            # Right: Chat Interface
+            with gr.Column(scale=2):
+                gr.Markdown("### 2. Diagnostic Chat")
+                chatbot = gr.Chatbot(height=350, show_label=False)
+                with gr.Row():
+                    with gr.Column(scale=4, min_width=0):
+                        msg = gr.Textbox(placeholder="E.g., What abnormality is seen in the left lung?", lines=3, show_label=False)
+                    with gr.Column(scale=1, min_width=0):
+                        submit_btn = gr.Button("Send", variant="primary")
+                        clear_chat_btn = gr.Button("Clear Chat")
+        with gr.Row():
+            with gr.Column():
+                gr.Markdown(f"## {icon_html_xai} XAI Dashboard")
+                gr.Markdown("---")
 
     with gr.Tab("Database Dashboard"):
         gr.Markdown(f"## {icon_html_xai} XAI Dashboard (DATABASE)")
@@ -1127,7 +1249,9 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
         rag_toggle, reflexion_toggle,
         k_slider, a_slider,
         # Buttons
-        load_btn, run_btn, xai_btn, judge_btn
+        load_btn, run_btn, xai_btn, judge_btn,
+        # Live Chat Inputs
+        live_img_input, msg, submit_btn, clear_chat_btn
     ]
 
     def lock_interface():
@@ -1198,6 +1322,46 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
         fn=unlock_interface,
         inputs=None,
         outputs=all_inputs_and_buttons
+    )
+
+    def add_user_message(message, history):
+        return history + [{"role": "user", "content": message}], ""
+
+    def clear_live_history():
+        return [], []
+
+    submit_btn.click(
+        fn=add_user_message,
+        inputs=[msg, live_chat_history],
+        outputs=[live_chat_history, msg],  # Clears the textbox immediately
+        queue=False
+    ).then(
+        lambda h: h,  # Update the chatbot UI immediately with the user's message
+        inputs=[live_chat_history],
+        outputs=[chatbot]
+    ).then(
+        fn=lock_interface,
+        inputs=None,
+        outputs=all_inputs_and_buttons,
+        queue=False
+    ).then(
+        run_live_inference,
+        inputs=[live_img_input, live_chat_history],
+        outputs=[live_chat_history, prediction_state]
+    ).then(
+        lambda h: h,  # Update chat window
+        inputs=[live_chat_history],
+        outputs=[chatbot]
+    ).then(
+        fn=unlock_interface,
+        inputs=None,
+        outputs=all_inputs_and_buttons
+    )
+
+    clear_chat_btn.click(
+        fn=clear_live_history,
+        inputs=None,
+        outputs=[live_chat_history, chatbot]
     )
 
     xai_btn.click(
@@ -1342,6 +1506,7 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
 
             green_status = f"""## 🟢 System Status: Ready\n
                 **Model:** `{last_config['model']}`\n
+                **Prompt style:** {last_config['prompt']}\n
                 **Reflexion:** {ref_txt}\n
                 **RAG:** {rag_txt}
             """

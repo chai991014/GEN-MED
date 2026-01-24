@@ -52,7 +52,7 @@ class RAGPipeline:
             retrieved_scores = [round(item.get('score', 0), 4) for item in retrieved_items]
         return context, retrieved_ids, retrieved_scores
 
-    def generate(self, image, question, context=""):
+    def generate(self, image, question, context="", do_sample=False, temperature=1.0):
         """
         Executes the RAG flow: Retrieve -> Contextualize -> Generate.
         """
@@ -61,7 +61,7 @@ class RAGPipeline:
         if not context:
             context, retrieved_ids, retrieved_scores = self._retrieve_context(image, question)
         # Pass to the underlying llm adapter
-        result = self.llm.generate(image, question, context=context)
+        result = self.llm.generate(image, question, context=context, do_sample=do_sample, temperature=temperature)
         result["retrieved_ids"] = retrieved_ids
         result["retrieved_scores"] = retrieved_scores
         return result
