@@ -452,7 +452,7 @@ def run_database_inference(dataset_input, idx, model_key, use_rag, use_reflexion
         return f"## ❌ **System Error:** {str(e)}", *reset_results[1:]
 
 
-def run_live_inference(image, chat_history):
+def run_live_inference(image, chat_history, model_key, use_rag, use_reflexion, prompt_style, k_val, alpha_val):
     global inference_engine, LOADED_CONFIG
 
     message = chat_history[-1]["content"] if chat_history else ""
@@ -461,7 +461,36 @@ def run_live_inference(image, chat_history):
     closed_acc = get_closed_acc()
 
     if inference_engine is None or LOADED_CONFIG is None:
+        error_msg = """
+            ## ⚠️ **Error:** No model loaded.\n
+            Please select a model and click **Initialize Engine**.
+        """
         return (
+            error_msg,
+            chat_history + [{"role": "assistant", "content": "⚠️ Error: Engine not initialized. Please select a model and click Initialize Engine."}],
+            None,
+            "", "No retrieval", *empty_rag, *closed_acc, *closed_acc,
+            "", "No retrieval", *empty_rag, *empty_rag, *closed_acc, *closed_acc, *closed_acc
+        )
+
+    current_settings = {
+        "model": model_key,
+        "rag": use_rag,
+        "reflexion": use_reflexion,
+        "prompt": prompt_style,
+        "k": k_val,
+        "alpha": alpha_val
+    }
+
+    if current_settings != LOADED_CONFIG:
+        changes = [k for k, v in current_settings.items() if LOADED_CONFIG[k] != v]
+        error_msg = f"""
+            ## ⚠️ **Settings Mismatch**\n
+            You changed: `{', '.join(changes)}`\n
+            Please click **Initialize / Reload Engine** to apply changes before running inference.
+        """
+        return (
+            error_msg,
             chat_history + [{"role": "assistant", "content": "⚠️ Error: Engine not initialized. Please select a model and click Initialize Engine."}],
             None,
             "", "No retrieval", *empty_rag, *closed_acc, *closed_acc,
@@ -469,7 +498,12 @@ def run_live_inference(image, chat_history):
         )
 
     if image is None:
+        error_msg = """
+            ## ⚠️ **Error:** No image uploaded.\n
+            Please upload an image first.
+        """
         return (
+            error_msg,
             chat_history + [{"role": "assistant", "content": "⚠️ Error: Please upload an image first."}],
             None,
             "", "No retrieval", *empty_rag, *closed_acc, *closed_acc,
@@ -572,6 +606,9 @@ def run_live_inference(image, chat_history):
                 live_stk_rag_updates.extend([gr.update(visible=False), None, None, gr.update(visible=False)])
                 live_stk_aud_rag_updates.extend([gr.update(visible=False), None, None, gr.update(visible=False)])
 
+        # Success Return
+        valid_status = get_status_msg(LOADED_CONFIG)
+
         # Accordion Visibility States
         ref_updates = get_open_acc() if LOADED_CONFIG['reflexion'] else closed_acc
         rag_updates_acc = get_open_acc() if retrieved_ids else closed_acc
@@ -591,6 +628,7 @@ def run_live_inference(image, chat_history):
         }
 
         return (
+            valid_status,
             new_history,
             state_data,
             reflex_intermediate_output, retrieval_log,
@@ -610,6 +648,7 @@ def run_live_inference(image, chat_history):
         import traceback
         traceback.print_exc()
         return (
+            f"## ❌ **System Error:** {str(e)}",
             chat_history + [{"role": "assistant", "content": f"❌ Error: {str(e)}"}],
             None,
             "", "Error", *empty_rag, *closed_acc, *closed_acc,
@@ -632,8 +671,6 @@ def run_xai(state_data):
             error_msg,
             None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
             None, None, None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
-            None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
-            None, None, None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc
         )
 
     if not state_data:
@@ -646,8 +683,6 @@ def run_xai(state_data):
             error_msg,
             None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
             None, None, None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
-            None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
-            None, None, None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc
         )
 
     image = state_data["image"]
@@ -723,43 +758,128 @@ def run_xai(state_data):
     cf_updates = get_open_acc() if cf_visual_img is not None else closed_acc
     stk_aud_vis_updates = get_open_acc() if img_att is not None or img_occ is not None else closed_acc
 
-    is_live = "Live Diagnostic" in state_data.get("gt", "")
-
-    empty_img = None
-    empty_txt = ""
-    empty_xai_deep = (
-        empty_img, empty_img, empty_txt, empty_txt, empty_img, empty_txt,
-        *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc
-    )
-    empty_xai_stk = (
-        empty_img, empty_img, empty_img, empty_img, empty_txt, empty_txt, empty_img, empty_txt,
-        *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc
-    )
-    active_deep = (
+    return (
+        valid_status,
         img_att, img_occ, concept_rpt_zs, concept_rpt_nc, cf_visual_img, cf_visual_rpt,
-        *att_updates, *occ_updates, *zs_updates, *nc_updates, *cf_updates
-    )
-    active_stk = (
+        *att_updates, *occ_updates, *zs_updates, *nc_updates, *cf_updates,
+
+        # Stakeholder Analysis (DB)
         img_att, img_occ, img_att, img_occ, concept_rpt_zs, concept_rpt_nc, cf_visual_img, cf_visual_rpt,
         *att_updates, *occ_updates, *stk_aud_vis_updates, *zs_updates, *nc_updates, *cf_updates
     )
 
-    if is_live:
+
+def run_live_xai(state_data):
+    global inference_engine, LOADED_CONFIG
+
+    closed_acc = get_closed_acc()
+
+    # Validation
+    if inference_engine is None or LOADED_CONFIG is None:
+        error_msg = f"""
+            ## ⚠️ **Error:** No model loaded.\n
+            Please select a model and click **Initialize Engine**.
+        """
         return (
-            valid_status,
-            *empty_xai_deep,    # Deep Analysis (DB)
-            *empty_xai_stk,     # Stakeholder (DB)
-            *active_deep,       # Deep Analysis (Live)
-            *active_stk         # Stakeholder (Live)
+            error_msg,
+            None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
+            None, None, None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
         )
-    else:
+
+    if not state_data:
+        error_msg = f"""
+            ## ⚠️ **Error:** Action Required.\n
+            Please run **DB Inference** first.\n
+            If you are using **Live Diagnostic**, please upload an image and ask a question.
+        """
         return (
-            valid_status,
-            *active_deep,       # Deep Analysis (DB)
-            *active_stk,        # Stakeholder (DB)
-            *empty_xai_deep,    # Deep Analysis (Live)
-            *empty_xai_stk      # Stakeholder (Live)
+            error_msg,
+            None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
+            None, None, None, None, error_msg, error_msg, None, error_msg, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc, *closed_acc,
         )
+
+    image = state_data["image"]
+    question = state_data["question"]
+    prediction_text = state_data["prediction"]
+
+    adapter = inference_engine.llm if hasattr(inference_engine, 'llm') else inference_engine
+
+    # 1. Visual XAI
+    # --- METHOD 1: Qwen Attention (Intrinsic) ---
+    # Fast, checks internal weights. Only works for Qwen.
+    img_att = None
+    try:
+        model_name = LOADED_CONFIG["model"]
+        if "qwen" in str(model_name).lower():
+            print("\n⚡ Running Intrinsic Attention...")
+            explainer_att = AttentionExplainer(adapter)
+            att_mask = explainer_att.generate_heatmap(image, question)
+            img_att = apply_colormap(image, att_mask)
+    except Exception as e:
+        print(f"⚠️ Attention XAI Failed: {e}")
+
+    # --- METHOD 2: Occlusion (Perturbation) ---
+    # Slower, but proves causality (removing this region breaks the answer).
+    img_occ = None
+    try:
+        print("🐢 Running Sliding Occlusion...")
+        explainer_occ = FastOcclusionExplainer(adapter)
+        occ_mask = explainer_occ.generate_heatmap(image, question, prediction_text, grid_size=8)
+        img_occ = apply_colormap(image, occ_mask)
+    except Exception as e:
+        print(f"⚠️ Occlusion XAI Failed: {e}")
+
+    # 2. Visual Retrieval Counterfactual
+    print("🔄 Running Visual Retrieval Counterfactual...")
+    cf_visual_img = None
+    cf_visual_rpt = ""
+    try:
+        # Only works if RAG is on
+        if hasattr(inference_engine, 'xai_retriever') and inference_engine.xai_retriever:
+            visual_cf = RetrievalCounterfactual(inference_engine)
+            cf_visual_img, cf_visual_rpt = visual_cf.find_counterfactual(image, question, prediction_text)
+        else:
+            cf_visual_rpt = "RAG is disabled. Enable RAG to generate Visual Counterfactuals."
+    except Exception as e:
+        cf_visual_rpt = f"Visual CF Failed: {e}"
+
+    # 3. Concept Analysis (BioMedCLIP)
+    concept_rpt_zs = ""
+    concept_rpt_nc = ""
+    try:
+        if hasattr(inference_engine, 'retriever'):
+            c_explainer = ConceptExplainer(inference_engine)
+            # Strategy A: Zero-Shot (Fixed Check)
+            print("🧠 Running Concept Activation Analysis...")
+            _, concept_rpt_zs = c_explainer.evaluate(image)
+
+            # Strategy B: Neighbor Consensus (Discovery)
+            print("🧬 Running Neighbor-Based Concept Consensus...")
+            concept_rpt_nc = c_explainer.discover_concepts(image, question, k=50)
+        else:
+            concept_rpt_zs = "RAG disabled. Cannot run Concept Analysis."
+            concept_rpt_nc = "RAG disabled. Cannot run Concept Analysis."
+    except Exception as e:
+        concept_rpt_zs = f"Concept Analysis Failed: {e}"
+        concept_rpt_nc = f"Concept Analysis Failed: {e}"
+
+    valid_status = get_status_msg(LOADED_CONFIG)
+    att_updates = get_open_acc() if img_att is not None else closed_acc
+    occ_updates = get_open_acc() if img_occ is not None else closed_acc
+    zs_updates = get_open_acc() if concept_rpt_zs and "RAG disabled" not in concept_rpt_zs else closed_acc
+    nc_updates = get_open_acc() if concept_rpt_nc and "RAG disabled" not in concept_rpt_nc else closed_acc
+    cf_updates = get_open_acc() if cf_visual_img is not None else closed_acc
+    stk_aud_vis_updates = get_open_acc() if img_att is not None or img_occ is not None else closed_acc
+
+    return (
+        valid_status,
+        img_att, img_occ, concept_rpt_zs, concept_rpt_nc, cf_visual_img, cf_visual_rpt,
+        *att_updates, *occ_updates, *zs_updates, *nc_updates, *cf_updates,
+
+        # Stakeholder Analysis (Live)
+        img_att, img_occ, img_att, img_occ, concept_rpt_zs, concept_rpt_nc, cf_visual_img, cf_visual_rpt,
+        *att_updates, *occ_updates, *stk_aud_vis_updates, *zs_updates, *nc_updates, *cf_updates
+    )
 
 
 def run_llm_judge(state_data):
@@ -767,6 +887,7 @@ def run_llm_judge(state_data):
     Runs BOTH the Reflexion Judge (Text) and the RAG Judge (Visual) sequentially.
     Returns two separate report strings.
     """
+    global inference_engine, LOADED_CONFIG
     closed_acc = get_closed_acc()
 
     if inference_engine is None or LOADED_CONFIG is None:
@@ -778,8 +899,6 @@ def run_llm_judge(state_data):
             error_msg,
             error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc,
             error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc,
-            error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc,
-            error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc
         )
 
     if not state_data:
@@ -792,11 +911,9 @@ def run_llm_judge(state_data):
             error_msg,
             error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc,
             error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc,
-            error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc,
-            error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc
         )
 
-    # --- PART A: REFLEXION JUDGE (Gemini 2.5) ---
+    # --- PART A: REFLEXION JUDGE ---
     reflexion_report = ""
     try:
         print("\n⚖️Start Reflexion Judge")
@@ -819,7 +936,7 @@ def run_llm_judge(state_data):
     except Exception as e:
         reflexion_report = f"## ❌ Reflexion Judge Error\n{str(e)}"
 
-    # --- PART B: RAG JUDGE (Gemini 2.0 Vision) ---
+    # --- PART B: RAG JUDGE ---
     rag_summary_text = ""
     rag_item_updates_deep = []
     rag_item_updates_stk = []
@@ -872,31 +989,129 @@ def run_llm_judge(state_data):
     ref_judge_updates = get_open_acc() if "Reflexion disabled" not in reflexion_report else closed_acc
     rag_judge_updates = get_open_acc() if "No RAG items" not in rag_summary_text else closed_acc
 
-    is_live = "Live Diagnostic" in state_data.get("gt", "")
+    return (
+        valid_status,
+        # Deep Analysis (DB)
+        reflexion_report, rag_summary_text, *rag_item_updates_deep, *ref_judge_updates, *rag_judge_updates,
+        # Stakeholder (DB)
+        reflexion_report, rag_summary_text, *rag_item_updates_stk, *ref_judge_updates, *rag_judge_updates, *rag_judge_updates
+    )
 
-    empty_txt = ""
-    empty_deep = (empty_txt, empty_txt, *[gr.update(value="", visible=False) for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc)
-    empty_stk = (empty_txt, empty_txt, *[gr.update(value="", visible=False) for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc)
 
-    active_deep = (reflexion_report, rag_summary_text, *rag_item_updates_deep, *ref_judge_updates, *rag_judge_updates)
-    active_stk = (reflexion_report, rag_summary_text, *rag_item_updates_stk, *ref_judge_updates, *rag_judge_updates, *rag_judge_updates)
+def run_live_llm_judge(state_data):
+    """
+    Runs BOTH the Reflexion Judge (Text) and the RAG Judge (Visual) sequentially.
+    Returns two separate report strings.
+    """
+    global inference_engine, LOADED_CONFIG
+    closed_acc = get_closed_acc()
 
-    if is_live:
+    if inference_engine is None or LOADED_CONFIG is None:
+        error_msg = f"""
+            ## ⚠️ **Error:** No model loaded.\n
+            Please select a model and click **Initialize Engine**.
+        """
         return (
-            valid_status,
-            *empty_deep,    # Deep Analysis (DB)
-            *empty_stk,     # Stakeholder (DB)
-            *active_deep,   # Deep Analysis (Live)
-            *active_stk     # Stakeholder (Live)
+            error_msg,
+            error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc,
+            error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc,
         )
-    else:
+
+    if not state_data:
+        error_msg = f"""
+            ## ⚠️ **Error:** Action Required.\n
+            Please run **DB Inference** first.\n
+            If you are using **Live Diagnostic**, please upload an image and ask a question.
+        """
         return (
-            valid_status,
-            *active_deep,   # Deep Analysis (DB)
-            *active_stk,    # Stakeholder (DB)
-            *empty_deep,    # Deep Analysis (Live)
-            *empty_stk      # Stakeholder (Live)
+            error_msg,
+            error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc,
+            error_msg, error_msg, *[gr.update(value="") for _ in range(MAX_RAG_K)], *closed_acc, *closed_acc, *closed_acc,
         )
+
+    # --- PART A: REFLEXION JUDGE ---
+    reflexion_report = ""
+    try:
+        print("\n⚖️Start Reflexion Judge")
+        # Extract Data
+        question = state_data.get("question")
+        gt = state_data.get("gt", "N/A")
+        prediction_text = state_data.get("prediction")
+        draft = state_data.get("draft", "N/A")
+        critique = state_data.get("critique", "N/A")
+
+        if draft == "N/A" or critique == "N/A":
+            reflexion_report = """
+            ## ⚠️ Evaluation Skipped
+            Reflexion was not enabled. Enable **Reflexion** in Settings to test this.
+            """
+        else:
+            judge = ReflexionJudge(api_key=GOOGLE_API_KEY)
+            reflexion_report = judge.evaluate(question, gt, draft, critique, prediction_text)
+
+    except Exception as e:
+        reflexion_report = f"## ❌ Reflexion Judge Error\n{str(e)}"
+
+    # --- PART B: RAG JUDGE ---
+    rag_summary_text = ""
+    rag_item_updates_deep = []
+    rag_item_updates_stk = []
+
+    try:
+        print("⚖️Start RAG Judge")
+        rag_items = state_data.get("rag_items", [])
+        user_q = state_data.get("question", "")
+
+        if not rag_items:
+            rag_summary_text = """
+            ## ⚠️ Evaluation Skipped
+            No RAG items found. RAG was not enabled. Enable **RAG** in Settings to test this.
+            """
+            rag_item_updates_deep = [gr.update(value="", visible=False) for _ in range(MAX_RAG_K)]
+            rag_item_updates_stk = [gr.update(value="", visible=False) for _ in range(MAX_RAG_K)]
+        else:
+            rag_judge = RAGJudge(api_key=GOOGLE_API_KEY)
+            json_data, summary = rag_judge.evaluate_batch(user_q, rag_items)
+
+            rag_summary_text = summary
+            evals = json_data.get("items", [])
+
+            for i in range(MAX_RAG_K):
+                if i < len(evals):
+                    e = evals[i]
+
+                    # Styled Verdict Card
+                    color = "red" if "IRRELEVANT" in e['verdict'].upper() else "green"
+                    icon = "✅" if color == "green" else "❌"
+
+                    card = f"""
+                        ### {icon} {e['verdict']}
+                        * **Visual:** {e['visual_check']}
+                        * **Semantic:** {e['semantic_check']}
+                        * **Reason:** {e['reasoning']}
+                    """
+                    rag_item_updates_deep.append(gr.update(value=card, visible=True))
+                    rag_item_updates_stk.append(gr.update(value=card, visible=True))
+                else:
+                    rag_item_updates_deep.append(gr.update(value="", visible=False))
+                    rag_item_updates_stk.append(gr.update(value="", visible=False))
+
+    except Exception as e:
+        rag_summary_text = f"## ❌ RAG Judge Error\n{str(e)}"
+        rag_item_updates_deep = [gr.update(value="") for _ in range(MAX_RAG_K)]
+        rag_item_updates_stk = [gr.update(value="") for _ in range(MAX_RAG_K)]
+
+    valid_status = get_status_msg(LOADED_CONFIG)
+    ref_judge_updates = get_open_acc() if "Reflexion disabled" not in reflexion_report else closed_acc
+    rag_judge_updates = get_open_acc() if "No RAG items" not in rag_summary_text else closed_acc
+
+    return (
+        valid_status,
+        # Deep Analysis (Live)
+        reflexion_report, rag_summary_text, *rag_item_updates_deep, *ref_judge_updates, *rag_judge_updates,
+        # Stakeholder (Live)
+        reflexion_report, rag_summary_text, *rag_item_updates_stk, *ref_judge_updates, *rag_judge_updates, *rag_judge_updates
+    )
 
 
 def reset_system():
@@ -1781,8 +1996,9 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
         queue=False
     ).then(
         run_live_inference,
-        inputs=[live_img_input, live_chat_history],
+        inputs=[live_img_input, live_chat_history, model_select, rag_toggle, reflexion_toggle, prompt_input, k_slider, a_slider],
         outputs=[
+            status,
             live_chat_history,
             prediction_state,
 
@@ -1841,26 +2057,7 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
             stk_aud_vis_body, stk_aud_vis_state, stk_aud_vis_btn,
             stk_zs_body, stk_zs_state, stk_zs_btn,
             stk_nc_body, stk_nc_state, stk_nc_btn,
-            stk_cf_body, stk_cf_state, stk_cf_btn,
-
-            # Deep Analysis (Live Tab)
-            live_attention_out, live_occlusion_out, live_concept_rpt_zs_out, live_concept_rpt_nc_out,
-            live_cf_visual_out, live_cf_visual_report_out,
-            live_att_body, live_att_state, live_att_btn,
-            live_occ_body, live_occ_state, live_occ_btn,
-            live_zs_body, live_zs_state, live_zs_btn,
-            live_nc_body, live_nc_state, live_nc_btn,
-            live_cf_body, live_cf_state, live_cf_btn,
-
-            # Stakeholder Analysis (Live Tab)
-            live_stk_attention_out, live_stk_occlusion_out, live_stk_aud_att_out, live_stk_aud_occ_out,
-            live_stk_concept_zs_out, live_stk_concept_nc_out, live_stk_cf_visual_out, live_stk_cf_visual_report_out,
-            live_stk_att_body, live_stk_att_state, live_stk_att_btn,
-            live_stk_occ_body, live_stk_occ_state, live_stk_occ_btn,
-            live_stk_aud_vis_body, live_stk_aud_vis_state, live_stk_aud_vis_btn,
-            live_stk_zs_body, live_stk_zs_state, live_stk_zs_btn,
-            live_stk_nc_body, live_stk_nc_state, live_stk_nc_btn,
-            live_stk_cf_body, live_stk_cf_state, live_stk_cf_btn
+            stk_cf_body, stk_cf_state, stk_cf_btn
         ]
     ).then(
         fn=unlock_interface,
@@ -1886,18 +2083,7 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
             stk_ref_judge_out, stk_rag_judge_out, *stk_audit_verdict_boxes,
             stk_ref_rpt_body, stk_ref_rpt_state, stk_ref_rpt_btn,
             stk_rag_rpt_body, stk_rag_rpt_state, stk_rag_rpt_btn,
-            stk_audit_body, stk_audit_state, stk_audit_btn,
-
-            # Deep Analysis Judge Outputs (Live Tab)
-            live_reflex_judge_report_out, live_rag_judge_summary_out, *live_rag_verdict_boxes,
-            live_ref_rpt_body, live_ref_rpt_state, live_ref_rpt_btn,
-            live_rag_rpt_body, live_rag_rpt_state, live_rag_rpt_btn,
-
-            # Stakeholder Judge Outputs (Live Tab)
-            live_stk_ref_judge_out, live_stk_rag_judge_out, *live_stk_audit_verdict_boxes,
-            live_stk_ref_rpt_body, live_stk_ref_rpt_state, live_stk_ref_rpt_btn,
-            live_stk_rag_rpt_body, live_stk_rag_rpt_state, live_stk_rag_rpt_btn,
-            live_stk_audit_body, live_stk_audit_state, live_stk_audit_btn
+            stk_audit_body, stk_audit_state, stk_audit_btn
         ]
     ).then(
         fn=unlock_interface,
@@ -1911,27 +2097,10 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
         outputs=all_inputs_and_buttons,
         queue=False
     ).then(
-        run_xai,
+        run_live_xai,
         inputs=[prediction_state],
         outputs=[
             status,
-            attention_out, occlusion_out, concept_rpt_zs_out, concept_rpt_nc_out, cf_visual_out, cf_visual_report_out,
-            att_body, att_state, att_btn,
-            occ_body, occ_state, occ_btn,
-            zs_body, zs_state, zs_btn,
-            nc_body, nc_state, nc_btn,
-            cf_body, cf_state, cf_btn,
-
-            # Stakeholder Analysis (Database Tab) - Will be cleared since state is Live
-            stk_attention_out, stk_occlusion_out, stk_aud_att_out, stk_aud_occ_out,
-            stk_concept_zs_out, stk_concept_nc_out, stk_cf_visual_out, stk_cf_visual_report_out,
-            stk_att_body, stk_att_state, stk_att_btn,
-            stk_occ_body, stk_occ_state, stk_occ_btn,
-            stk_aud_vis_body, stk_aud_vis_state, stk_aud_vis_btn,
-            stk_zs_body, stk_zs_state, stk_zs_btn,
-            stk_nc_body, stk_nc_state, stk_nc_btn,
-            stk_cf_body, stk_cf_state, stk_cf_btn,
-
             # Deep Analysis (Live Tab)
             live_attention_out, live_occlusion_out, live_concept_rpt_zs_out, live_concept_rpt_nc_out,
             live_cf_visual_out, live_cf_visual_report_out,
@@ -1963,20 +2132,10 @@ with gr.Blocks(theme="Soft", title="GEN-MED-X", css=custom_css) as demo:
         outputs=all_inputs_and_buttons,
         queue=False
     ).then(
-        run_llm_judge,
+        run_live_llm_judge,
         inputs=[prediction_state],
         outputs=[
             status,
-            reflex_judge_report_out, rag_judge_summary_out, *rag_verdict_boxes,
-            ref_rpt_body, ref_rpt_state, ref_rpt_btn,
-            rag_rpt_body, rag_rpt_state, rag_rpt_btn,
-
-            # Stakeholder Judge Outputs (Database Tab) - Will be cleared
-            stk_ref_judge_out, stk_rag_judge_out, *stk_audit_verdict_boxes,
-            stk_ref_rpt_body, stk_ref_rpt_state, stk_ref_rpt_btn,
-            stk_rag_rpt_body, stk_rag_rpt_state, stk_rag_rpt_btn,
-            stk_audit_body, stk_audit_state, stk_audit_btn,
-
             # Deep Analysis Judge Outputs (Live Tab)
             live_reflex_judge_report_out, live_rag_judge_summary_out, *live_rag_verdict_boxes,
             live_ref_rpt_body, live_ref_rpt_state, live_ref_rpt_btn,
